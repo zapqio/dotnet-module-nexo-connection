@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<UseWPF>true</UseWPF>
+		<PlatformTarget>x64</PlatformTarget>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+		<GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+		<DeterministicSourcePaths>true</DeterministicSourcePaths>
+
+		<!-- Paczka NuGet: API do kompilacji dla modułów konsumenckich (PackageReference z ExcludeAssets="runtime").
+		     W runtime DLL i SDK biorą się z zipa Nexo.Connection w Modules\ runnera. -->
+		<PackageId>Zapqio.Nexo.Connection</PackageId>
+		<Version>1.0.0</Version>
+		<!-- Tożsamość zestawu stała, jak w Module.Core: konsument skompilowany przeciw 1.0.0 wiąże się
+		     z każdym 1.x. Podbić dopiero przy zmianie łamiącej API (wtedy 2.0.0.0 i przebudowa konsumentów). -->
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<Authors>Zapqio</Authors>
+		<Company>Hdwr global</Company>
+		<Description>Shared InsERT nexo (Subiekt) connection for Zapqio Runner modules: one NexoClient singleton injected into consumer modules, plus the nexo SDK references for compiling them.</Description>
+		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+
+		<!-- Ten moduł wozi SDK w zipie. Konsumenci dostają te same referencje z Private=false (props paczki). -->
+		<NexoSdkCopyLocal>true</NexoSdkCopyLocal>
+	</PropertyGroup>
+
+	<!-- Ten sam plik jedzie w paczce (build\): jedna lista referencji SDK dla tego projektu i dla konsumentów. -->
+	<Import Project="build\Zapqio.Nexo.Connection.props" />
+
+	<ItemGroup>
+		<None Include="build\Zapqio.Nexo.Connection.props" Pack="true" PackagePath="build\" />
+		<PackageReference Include="Zapqio.Runner.Module.Core" Version="1.0.0" ExcludeAssets="runtime" />
+	</ItemGroup>
+
+	<!--Zip after publish-->
+	<Target Name="ZipAfterPublish" AfterTargets="Publish">
+		<PropertyGroup>
+			<ZipFileName>$(MSBuildProjectName).zip</ZipFileName>
+			<ZipFilePath>$(PublishDir)..\$(ZipFileName)</ZipFilePath>
+		</PropertyGroup>
+		<!--Lista bibliotek, ktore runner ma skanowac; bez niej laduje wszystkie ~550 dll z paczki-->
+		<WriteLinesToFile File="$(PublishDir)##Dll" Lines="$(TargetFileName)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+		<!--Moduł współdzielony: inne paczki w Modules\ mogą brać z tego katalogu biblioteki (NexoClient, SDK)-->
+		<WriteLinesToFile File="$(PublishDir)##Shared" Lines="shared" Overwrite="true" WriteOnlyWhenDifferent="true" />
+		<Delete Files="$(ZipFilePath)" Condition="Exists('$(ZipFilePath)')" />
+		<ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(ZipFilePath)" />
+		<Message Importance="High" Text="Created: $(ZipFilePath)" />
+	</Target>
+
+</Project>

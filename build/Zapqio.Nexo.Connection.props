@@ -1,0 +1,49 @@
+<Project>
+
+	<!-- Referencje do SDK InsERT nexo. Plik jedzie w paczce NuGet (build\, nazwa = PackageId), więc NuGet
+	     importuje go automatycznie do każdego projektu z PackageReference Zapqio.Nexo.Connection;
+	     Nexo.Connection.csproj importuje go jawnie. Konsument kompiluje się przeciw SDK, ale nic z niego
+	     nie kopiuje do publish (Private=false) - w runtime SDK leży w zipie Nexo.Connection w Modules\ runnera.
+	     Każdą właściwość można nadpisać w csproj konsumenta (inna ścieżka albo wersja SDK). -->
+	<PropertyGroup>
+		<NexoSdkVersion Condition="'$(NexoSdkVersion)' == ''">61.1.0.9431</NexoSdkVersion>
+		<nexoSdkBinPath Condition="'$(nexoSdkBinPath)' == ''">C:\nexoSDK_$(NexoSdkVersion)\Bin\</nexoSdkBinPath>
+		<NexoSdkCopyLocal Condition="'$(NexoSdkCopyLocal)' == ''">false</NexoSdkCopyLocal>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Reference Include="InsERT.Moria.API" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Moria.API.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Moria.DaneDomyslne" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Moria.DaneDomyslne.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Moria.ModelDanych" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Moria.ModelDanych.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Moria.Sfera" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Moria.Sfera.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Mox.Core" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Mox.Core.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Mox.DataExtensions" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Mox.DataExtensions.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Mox.EntityFramework.Core" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Mox.EntityFramework.Core.dll</HintPath>
+		</Reference>
+		<Reference Include="InsERT.Mox.EntityFrameworkSupport" Private="$(NexoSdkCopyLocal)">
+			<HintPath>$(nexoSdkBinPath)InsERT.Mox.EntityFrameworkSupport.dll</HintPath>
+		</Reference>
+	</ItemGroup>
+
+	<!-- Pliki SDK spoza referencji, potrzebne w katalogu paczki, która wozi SDK -->
+	<ItemGroup Condition="'$(NexoSdkCopyLocal)' == 'true'">
+		<None Include="$(nexoSdkBinPath)Xml.pak" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="$(nexoSdkBinPath)ijwhost.dll" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="$(nexoSdkBinPath)Microsoft.Data.SqlClient.SNI.dll" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="$(nexoSdkBinPath)Mrt.pak" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
+</Project>
