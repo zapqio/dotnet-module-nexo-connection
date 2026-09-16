@@ -12,7 +12,7 @@
 		<!-- Paczka NuGet: API do kompilacji dla modułów konsumenckich (PackageReference z ExcludeAssets="runtime").
 		     W runtime DLL i SDK biorą się z zipa Nexo.Connection w Modules\ runnera. -->
 		<PackageId>Zapqio.Nexo.Connection</PackageId>
-		<Version>1.0.0</Version>
+		<Version>1.0.1</Version>
 		<!-- Tożsamość zestawu stała, jak w Module.Core: konsument skompilowany przeciw 1.0.0 wiąże się
 		     z każdym 1.x. Podbić dopiero przy zmianie łamiącej API (wtedy 2.0.0.0 i przebudowa konsumentów). -->
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
@@ -23,8 +23,11 @@
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
 
-		<!-- Ten moduł wozi SDK w zipie. Konsumenci dostają te same referencje z Private=false (props paczki). -->
-		<NexoSdkCopyLocal>true</NexoSdkCopyLocal>
+		<!-- SDK nie jedzie w tym zipie: na runnerze leży w osobnej paczce współdzielonej Nexo.Sdk.zip
+		     (pakuje ją update-nexo-sdk.ps1), więc zmiana wersji Subiekta nie wymaga przebudowy niczego.
+		     Referencje SDK (props paczki) służą tu i u konsumentów tylko do kompilacji. Domyślna wersja
+		     w props to wersja do kompilacji, niezależna od tego, co klient ma w Nexo.Sdk.zip. -->
+		<NexoSdkCopyLocal>false</NexoSdkCopyLocal>
 	</PropertyGroup>
 
 	<!-- Ten sam plik jedzie w paczce (build\): jedna lista referencji SDK dla tego projektu i dla konsumentów. -->

@@ -1,5 +1,8 @@
 using InsERT.Moria.Sfera;
 using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
 using Zapqio.Runner.Core;
 
 namespace Nexo
@@ -36,6 +39,16 @@ namespace Nexo
         }
         private readonly ConnectionSettings _settings;
         private Uchwyt _uchwyt;
+
+        /// <summary>
+        /// Wersja SDK InsERT, z którym działa ten proces: ProductVersion InsERT.Moria.Sfera.dll, np. 61.1.0.9431.
+        /// Musi zgadzać się z wersją Subiekta, inaczej Sfera odrzuci połączenie.
+        /// </summary>
+        public string SdkVersion { get; }
+
+        /// <summary>Nazwa paczki w Modules\ runnera, z której załadowano SDK (katalog zestawu Sfery).</summary>
+        public string SdkPackage { get; }
+
         public Uchwyt Uchwyt
         {
             get
@@ -50,6 +63,19 @@ namespace Nexo
         public NexoClient(ConnectionSettings settings)
         {
             _settings = settings;
+            // Odczyt wersji celowo w konstruktorze: wymusza załadowanie Sfery przy tworzeniu metod, więc brak
+            // paczki SDK w Modules\ wychodzi przy starcie runnera jako czytelny błąd, a nie w środku zadania.
+            var sfera = typeof(Uchwyt).Assembly;
+            SdkVersion = ReadSdkVersion(sfera);
+            SdkPackage = Path.GetFileName(Path.GetDirectoryName(sfera.Location)) ?? "?";
+        }
+
+        private static string ReadSdkVersion(Assembly sfera)
+        {
+            // ProductVersion to np. "61.1.0.9431+438cf094..." - AssemblyVersion jest zawsze 1.0.0.0 i nic nie mówi.
+            var product = FileVersionInfo.GetVersionInfo(sfera.Location).ProductVersion ?? string.Empty;
+            var plus = product.IndexOf('+');
+            return plus > 0 ? product.Substring(0, plus) : product;
         }
 
         public void Dispose()
@@ -66,7 +92,7 @@ namespace Nexo
                 {
                     return;
                 }
-                Console.WriteLine("Connecting Nexo");
+                Console.WriteLine($"Connecting Nexo (SDK {SdkVersion} z paczki {SdkPackage})");
                 DanePolaczenia connectingData;
                 if (_settings.Connect.WindowsLogin)
                 {
@@ -83,12 +109,26 @@ namespace Nexo
                         uzytkownikSerwera: _settings.Connect.DatabaseUser,
                         hasloUzytkownikaSerwera: _settings.Connect.DatabasePassword);
                 }
-                _uchwyt = new MenedzerPolaczen().Polacz(connectingData, InsERT.Mox.Product.ProductId.Subiekt, new ConnectingStatusSfery());
-                var logeed = _uchwyt.ZalogujOperatora(_settings.Connect.UserName, _settings.Connect.UserPassword);
-                if (!logeed)
+                Uchwyt uchwyt;
+                try
                 {
-                    throw new Exception("Nexo login failed");
+                    uchwyt = new MenedzerPolaczen().Polacz(connectingData, InsERT.Mox.Product.ProductId.Subiekt, new ConnectingStatusSfery());
                 }
+                catch (Exception ex)
+                {
+                    // Tu ląduje niezgodność wersji SDK z Subiektem (po jego aktualizacji), a także brak serwera SQL itp.
+                    throw new NexoConnectionException(
+                        $"SDK {SdkVersion} (paczka {SdkPackage}) nie połączył się z Subiektem: {ex.Message} " +
+                        "Jeśli Subiekt ma inną wersję, uruchom na runnerze update-nexo-sdk.ps1 -Version <wersja z \"O programie\">.",
+                        ex);
+                }
+                if (!uchwyt.ZalogujOperatora(_settings.Connect.UserName, _settings.Connect.UserPassword))
+                {
+                    // Nieudane logowanie nie może zostawić uchwytu w polu - kolejne wywołanie dostałoby połączenie bez operatora.
+                    uchwyt.Dispose();
+                    throw new Exception($"Nexo login failed: operator {_settings.Connect.UserName} (SDK {SdkVersion})");
+                }
+                _uchwyt = uchwyt;
             }
         }
     }
