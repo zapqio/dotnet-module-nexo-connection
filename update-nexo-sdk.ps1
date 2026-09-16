@@ -154,7 +154,14 @@ function Restart-Runner {
     Write-Log "Proces runnera zakończony (PID $($procs.Id -join ', ')); usługa wstanie z opcji odzyskiwania."
 }
 
-$RunnerDir = [IO.Path]::GetFullPath($RunnerDir).TrimEnd('\')
+# Ścieżki względne liczone od bieżącej lokalizacji PowerShella ("cd C:\zapqio\runner" + "-RunnerDir .").
+# [IO.Path]::GetFullPath liczyłoby od katalogu startowego procesu, czyli zwykle od profilu użytkownika.
+function Resolve-Full([string] $Path) { return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path) }
+$RunnerDir = (Resolve-Full $RunnerDir).TrimEnd('\')
+if ($SdkDir) { $SdkDir = Resolve-Full $SdkDir }
+if ($WorkDir) { $WorkDir = Resolve-Full $WorkDir }
+if ($Log) { $Log = Resolve-Full $Log }
+if ($State) { $State = Resolve-Full $State }
 $modules = Join-Path $RunnerDir 'Modules'
 if (-not $WorkDir) { $WorkDir = Join-Path $RunnerDir '.sdk-tmp' }
 $temp = Join-Path $WorkDir ('sdk-' + [guid]::NewGuid().ToString('N'))
