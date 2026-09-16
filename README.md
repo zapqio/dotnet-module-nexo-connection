@@ -23,8 +23,8 @@ W `Modules\` runnera mają leżeć trzy rodzaje paczek:
 
 Kolejność:
 
-1. Skopiuj `update-nexo-sdk.ps1` do katalogu runnera i uruchom jako administrator z wersją Subiekta
-   z "Pomoc > O programie":
+1. Weź `update-nexo-sdk.ps1` z tego repo (albo z `Nexo.Connection.zip`, jest w środku), skopiuj do
+   katalogu runnera i uruchom jako administrator z wersją Subiekta z "Pomoc > O programie":
 
    ```powershell
    .\update-nexo-sdk.ps1 -Version 61.1.1 -NoRestart
@@ -61,26 +61,47 @@ sprzed podziału niesie jedno i drugie, więc trzeba go usunąć.
 
 ## Aktualizacja Subiekta
 
-Sfera wymaga SDK w tej samej wersji co Subiekt. Po aktualizacji Subiekta metody Nexo kończą się
-błędem `SDK <stara wersja> (paczka Nexo.Sdk) nie połączył się z Subiektem: ...` z tym zdaniem na końcu:
+Sfera wymaga SDK w tej samej wersji co Subiekt. Po aktualizacji Subiekta pierwsze zadanie Nexo kończy
+się błędem `SDK <stara wersja> (paczka Nexo.Sdk) nie połączył się z Subiektem: ... Wersja bazy danych
+to X ...`, a `NexoClient` w tej samej chwili uruchamia w tle `update-nexo-sdk.ps1 -Version X`: skrypt
+pobiera SDK z FTP InsERT, podmienia `Nexo.Sdk.zip`, dociąga komplet modułów (jeśli skonfigurowany)
+i restartuje usługę. Po kilku minutach kolejne zadania działają. W logu zadania widać
+`uruchomiono automatyczną podmianę SDK`, przebieg skryptu jest w `Logs\nexo-sdk-update.log`, a stan
+w `nexo-sdk-update.json` obok binarki. Zadania w toku w chwili restartu kończą się błędem i wymagają
+ponowienia z panelu.
 
-```powershell
-.\update-nexo-sdk.ps1 -Version <wersja z "O programie">
+Skrypt jedzie w `Nexo.Connection.zip`, a moduł kopiuje go do katalogu runnera, więc klient nie instaluje
+nic poza zipem. Restart wymaga, żeby konto usługi miało prawo start/stop na własnej usłudze; nadaje je
+`install.ps1` runnera od wersji 0.1.9. Na starszej instalacji skrypt kończy proces runnera, a usługa
+wstaje z opcji odzyskiwania po 5 sekundach.
+
+Sterowanie w `nexoModule.json`, sekcja `SdkUpdate` (powstaje z wartościami domyślnymi):
+
+```json
+"SdkUpdate": {
+  "Enabled": true,
+  "ModulesUrl": "https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}",
+  "ServiceName": "ZapqioRunner",
+  "Restart": true,
+  "RunnerDir": ""
+}
 ```
 
-To wszystko: skrypt pobiera SDK, podmienia `Nexo.Sdk.zip` i restartuje usługę. Moduły zostają, bo
-wiążą się z SDK po nazwie zestawu. Bez SDK w `Modules\` metody Nexo nie powstają wcale, runner loguje
-`Metoda ... nie została utworzona ... 'InsERT.Moria.Sfera'`, a pozostałe moduły działają.
+`Enabled: false` zostawia tylko komunikat z instrukcją ręcznego uruchomienia. `Restart: false` przy pracy
+z konsoli i w testach: skrypt podmienia zip, restart robisz sam. Nieudana próba dla danej wersji nie jest
+ponawiana przez godzinę, a trwająca podmiana nie jest dublowana przez kolejne padające zadania.
 
-Jeśli komplety modułów zbudowane pod kolejne wersje SDK są publikowane (`build-modules.ps1` z repo
-zapqio-modules), skrypt podmieni przy okazji także moduły, którymi klient już dysponuje:
+Ręcznie, jako administrator w katalogu runnera, ten sam skrypt:
 
 ```powershell
-.\update-nexo-sdk.ps1 -Version 61.1.1 -ModulesUrl https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}
+.\update-nexo-sdk.ps1 -Version <wersja z "O programie"> [-ModulesUrl <adres kompletów>]
 ```
 
-Gdy kompletu dla tej wersji jeszcze nie ma, skrypt zostawia obecne moduły z ostrzeżeniem; działają dalej,
-a uruchomienie później dociągnie komplet.
+Moduły zostają, bo wiążą się z SDK po nazwie zestawu. Bez SDK w `Modules\` metody Nexo nie powstają
+wcale, runner loguje `Metoda ... nie została utworzona ... 'InsERT.Moria.Sfera'`, a pozostałe moduły
+działają. Gdy kompletu modułów dla nowej wersji jeszcze nie ma (`build-modules.ps1` z repo
+zapqio-modules), skrypt zostawia obecne moduły z ostrzeżeniem; działają dalej, a późniejsze
+uruchomienie dociągnie komplet.
 
 Programista jest potrzebny tylko wtedy, gdy InsERT zmienił w SDK składową, z której korzysta któryś
 moduł. Wychodzi to przy kompilacji modułu przeciw nowemu SDK (`-p:NexoSdkVersion=<wersja>`), a nie

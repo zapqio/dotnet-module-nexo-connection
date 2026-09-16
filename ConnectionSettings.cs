@@ -70,6 +70,33 @@ namespace Nexo
             public bool WindowsLogin { get; set; } = false;
         }
 
+        /// <summary>
+        /// Automatyczna podmiana SDK po aktualizacji Subiekta: gdy Sfera odrzuci połączenie przez niezgodność
+        /// wersji, <see cref="NexoClient"/> uruchamia w tle <c>update-nexo-sdk.ps1</c> z katalogu runnera.
+        /// </summary>
+        public class SdkUpdateSettings
+        {
+            /// <summary>Wyłączenie zostawia tylko komunikat z instrukcją ręcznej podmiany.</summary>
+            public bool Enabled { get; set; } = true;
+
+            /// <summary>
+            /// Skąd brać komplet modułów zbudowany pod nową wersję SDK, adres z {version}
+            /// (np. https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}). Puste = tylko SDK.
+            /// </summary>
+            public string ModulesUrl { get; set; }
+
+            /// <summary>Nazwa usługi runnera do restartu po podmianie.</summary>
+            public string ServiceName { get; set; } = "ZapqioRunner";
+
+            /// <summary>false przy pracy z konsoli i w testach: skrypt podmienia zip, ale nie restartuje usługi.</summary>
+            public bool Restart { get; set; } = true;
+
+            /// <summary>Katalog runnera z podkatalogiem Modules; puste = katalog binarki runnera.</summary>
+            public string RunnerDir { get; set; }
+        }
+
         public NexoConnect Connect { get; set; } = new();
+
+        public SdkUpdateSettings SdkUpdate { get; set; } = new();
     }
 }

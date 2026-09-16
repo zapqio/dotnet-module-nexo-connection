@@ -38,6 +38,7 @@ namespace Nexo
             }
         }
         private readonly ConnectionSettings _settings;
+        private readonly SdkAutoUpdate _sdkUpdate;
         private Uchwyt _uchwyt;
 
         /// <summary>
@@ -68,6 +69,9 @@ namespace Nexo
             var sfera = typeof(Uchwyt).Assembly;
             SdkVersion = ReadSdkVersion(sfera);
             SdkPackage = Path.GetFileName(Path.GetDirectoryName(sfera.Location)) ?? "?";
+            // Skrypt podmiany SDK jedzie w paczce Connection; kopia w katalogu runnera, żeby klient nie instalował nic poza zipem.
+            _sdkUpdate = new SdkAutoUpdate(settings?.SdkUpdate);
+            _sdkUpdate.EnsureScript(Path.GetDirectoryName(typeof(NexoClient).Assembly.Location));
         }
 
         private static string ReadSdkVersion(Assembly sfera)
@@ -118,8 +122,7 @@ namespace Nexo
                 {
                     // Tu ląduje niezgodność wersji SDK z Subiektem (po jego aktualizacji), a także brak serwera SQL itp.
                     throw new NexoConnectionException(
-                        $"SDK {SdkVersion} (paczka {SdkPackage}) nie połączył się z Subiektem: {ex.Message} " +
-                        "Jeśli Subiekt ma inną wersję, uruchom na runnerze update-nexo-sdk.ps1 -Version <wersja z \"O programie\">.",
+                        $"SDK {SdkVersion} (paczka {SdkPackage}) nie połączył się z Subiektem: {ex.Message} {MismatchHint(ex.Message)}",
                         ex);
                 }
                 if (!uchwyt.ZalogujOperatora(_settings.Connect.UserName, _settings.Connect.UserPassword))
@@ -130,6 +133,26 @@ namespace Nexo
                 }
                 _uchwyt = uchwyt;
             }
+        }
+
+        /// <summary>
+        /// Przy niezgodności wersji uruchamia automatyczną podmianę SDK (o ile włączona) i zwraca zdanie do
+        /// komunikatu błędu; przy innych błędach ogólną wskazówkę.
+        /// </summary>
+        private string MismatchHint(string sferaMessage)
+        {
+            var subiekt = SdkAutoUpdate.SubiektVersionFrom(sferaMessage);
+            if (subiekt == null)
+            {
+                return "Jeśli Subiekt ma inną wersję, uruchom na runnerze update-nexo-sdk.ps1 -Version <wersja z \"O programie\">.";
+            }
+            var started = _sdkUpdate.TryStart(subiekt);
+            if (started == null)
+            {
+                return $"Uruchom na runnerze update-nexo-sdk.ps1 -Version {subiekt} (automatyczna podmiana wyłączona w nexoModule.json).";
+            }
+            Console.WriteLine(started);
+            return char.ToUpperInvariant(started[0]) + started.Substring(1) + ".";
         }
     }
 }

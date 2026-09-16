@@ -12,7 +12,7 @@
 		<!-- Paczka NuGet: API do kompilacji dla modułów konsumenckich (PackageReference z ExcludeAssets="runtime").
 		     W runtime DLL i SDK biorą się z zipa Nexo.Connection w Modules\ runnera. -->
 		<PackageId>Zapqio.Nexo.Connection</PackageId>
-		<Version>1.0.1</Version>
+		<Version>1.0.2</Version>
 		<!-- Tożsamość zestawu stała, jak w Module.Core: konsument skompilowany przeciw 1.0.0 wiąże się
 		     z każdym 1.x. Podbić dopiero przy zmianie łamiącej API (wtedy 2.0.0.0 i przebudowa konsumentów). -->
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
@@ -35,6 +35,8 @@
 
 	<ItemGroup>
 		<None Include="build\Zapqio.Nexo.Connection.props" Pack="true" PackagePath="build\" />
+		<!-- Skrypt podmiany SDK jedzie w zipie; NexoClient kopiuje go do katalogu runnera (automatyczna podmiana). -->
+		<None Include="update-nexo-sdk.ps1" CopyToOutputDirectory="PreserveNewest" />
 		<PackageReference Include="Zapqio.Runner.Module.Core" Version="1.0.0" ExcludeAssets="runtime" />
 	</ItemGroup>
 
