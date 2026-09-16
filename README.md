@@ -35,26 +35,32 @@ Kolejność:
 2. `Nexo.Connection.zip` i paczki z metodami do `Modules\`.
 3. Restart usługi. W logu: `Moduł współdzielony: Nexo.Sdk`, `Moduł współdzielony: Nexo.Connection`,
    `Add injection: Nexo.NexoClient`, `Add method: ...`.
-4. Przy pierwszym starcie obok binarki runnera powstaje `nexoModule.json` z sekcją `Connect`
-   (serwer SQL, baza, użytkownik SQL, operator Subiekta). Uzupełnij i zrestartuj usługę.
+4. Przy pierwszym starcie w katalogu runnera powstaje `Config\nexoModule.json` z pustą sekcją `Connect`
+   (serwer SQL, baza, użytkownik SQL, operator Subiekta). Do czasu uzupełnienia każde zadanie Nexo kończy
+   się błędem `Brak konfiguracji połączenia z Nexo: uzupełnij ... sekcję Connect (...)`. Uzupełnij
+   i zrestartuj usługę.
 
 ```json
 {
   "Connect": {
-    "DatabaseServer": "172.24.43.98,1433",
+    "DatabaseServer": "192.168.1.10\\INSERTNEXO",
     "DatabaseUser": "sa",
-    "DatabasePassword": "sa",
-    "DatabaseName": "Nexo_Demo",
+    "DatabasePassword": "...",
+    "DatabaseName": "Nexo_Firma",
     "UserName": "Szef",
-    "UserPassword": "robocze",
+    "UserPassword": "...",
     "WindowsLogin": false
-  }
+  },
+  "SdkUpdate": { ... }
 }
 ```
 
+Katalog `Config\` ma uprawnienia jak `appsettings.json` runnera (nadaje je `install.ps1`), bo w pliku są
+hasła. Instalacje sprzed tego katalogu, z `nexoModule.json` obok binarki, są przenoszone automatycznie.
+Inne moduły Nexo dopisują do tego samego pliku własne klucze przy pierwszym starcie.
+
 Połączenie jest nawiązywane leniwie, gdy pierwsza metoda sięgnie po `Uchwyt`. W logu zadania widać
-wtedy `Connecting Nexo (SDK 61.1.1.9471 z paczki Nexo.Sdk)`. Inne moduły Nexo trzymają w tym samym
-pliku własne klucze; nieznane pola są ignorowane.
+wtedy `Connecting Nexo (SDK 61.1.1.9471 z paczki Nexo.Sdk)`.
 
 Na runnerze ma być dokładnie jedna paczka z SDK i dokładnie jedna z `NexoClient`. Stary `Nexo.zip`
 sprzed podziału niesie jedno i drugie, więc trzeba go usunąć.
@@ -75,7 +81,7 @@ nic poza zipem. Restart wymaga, żeby konto usługi miało prawo start/stop na w
 `install.ps1` runnera od wersji 0.1.9. Na starszej instalacji skrypt kończy proces runnera, a usługa
 wstaje z opcji odzyskiwania po 5 sekundach.
 
-Sterowanie w `nexoModule.json`, sekcja `SdkUpdate` (powstaje z wartościami domyślnymi):
+Sterowanie w `Config\nexoModule.json`, sekcja `SdkUpdate` (powstaje z wartościami domyślnymi):
 
 ```json
 "SdkUpdate": {

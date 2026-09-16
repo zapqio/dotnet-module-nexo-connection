@@ -96,6 +96,14 @@ namespace Nexo
                 {
                     return;
                 }
+                var missing = MissingConnectionSettings();
+                if (missing.Length > 0)
+                {
+                    // Plik powstaje z pustymi danymi; bez tego sprawdzenia Sfera czekałaby na timeout SQL do pustego serwera.
+                    throw new NexoConnectionException(
+                        $"Brak konfiguracji połączenia z Nexo: uzupełnij w {NexoConfig.FilePath} sekcję Connect ({string.Join(", ", missing)}) i zrestartuj usługę runnera.",
+                        null);
+                }
                 Console.WriteLine($"Connecting Nexo (SDK {SdkVersion} z paczki {SdkPackage})");
                 DanePolaczenia connectingData;
                 if (_settings.Connect.WindowsLogin)
@@ -133,6 +141,17 @@ namespace Nexo
                 }
                 _uchwyt = uchwyt;
             }
+        }
+
+        private string[] MissingConnectionSettings()
+        {
+            var c = _settings?.Connect ?? new ConnectionSettings.NexoConnect();
+            var missing = new System.Collections.Generic.List<string>();
+            if (string.IsNullOrWhiteSpace(c.DatabaseServer)) missing.Add(nameof(c.DatabaseServer));
+            if (string.IsNullOrWhiteSpace(c.DatabaseName)) missing.Add(nameof(c.DatabaseName));
+            if (!c.WindowsLogin && string.IsNullOrWhiteSpace(c.DatabaseUser)) missing.Add(nameof(c.DatabaseUser));
+            if (string.IsNullOrWhiteSpace(c.UserName)) missing.Add(nameof(c.UserName));
+            return missing.ToArray();
         }
 
         /// <summary>
