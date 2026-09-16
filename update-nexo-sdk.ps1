@@ -23,8 +23,19 @@
 .PARAMETER NoRestart
   Tylko podmiana zipa, bez restartu usługi (np. sprawdzenie bez zainstalowanej usługi).
 
+.PARAMETER ModulesUrl
+  Skąd brać komplet modułów zbudowany pod tę wersję SDK (build-modules.ps1): adres HTTP z {version},
+  np. https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}. Podmieniane są tylko
+  te zipy, które już leżą w Modules. Brak kompletu = ostrzeżenie, obecne moduły zostają.
+
+.PARAMETER ModulesPath
+  To samo, ale katalog albo udział z {version}, np. \\serwer\zapqio\releases\sdk-{version}.
+
 .EXAMPLE
   .\update-nexo-sdk.ps1 -Version 61.1.1
+
+.EXAMPLE
+  .\update-nexo-sdk.ps1 -Version 61.1.1 -ModulesUrl https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}
 
 .EXAMPLE
   .\update-nexo-sdk.ps1 -SdkDir C:\nexoSDK_61.1.0.9431\Bin -RunnerDir D:\zapqio\runner
@@ -35,8 +46,38 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Local')] [string] $SdkDir,
     [string] $RunnerDir = 'C:\zapqio\runner',
     [string] $ServiceName = 'ZapqioRunner',
-    [switch] $NoRestart
+    [switch] $NoRestart,
+    [string] $ModulesUrl,
+    [string] $ModulesPath
 )
+
+# Komplet modułów dla wersji SDK: manifest.json z listą zipów, podmiana tylko tych, które klient już ma.
+function Update-ModuleSet([string] $ShortVersion, [string] $ModulesDir) {
+    $base = if ($ModulesUrl) { $ModulesUrl.Replace('{version}', $ShortVersion).TrimEnd('/') } else { $ModulesPath.Replace('{version}', $ShortVersion).TrimEnd('\') }
+    $manifest = $null
+    try {
+        if ($ModulesUrl) { $manifest = (Invoke-WebRequest -Uri "$base/manifest.json" -UseBasicParsing).Content | ConvertFrom-Json }
+        elseif (Test-Path (Join-Path $base 'manifest.json')) { $manifest = Get-Content (Join-Path $base 'manifest.json') -Raw | ConvertFrom-Json }
+    }
+    catch {
+        $manifest = $null
+    }
+    if (-not $manifest) {
+        Write-Warning "Brak kompletu modułów dla SDK $ShortVersion pod $base (jeszcze nie zbudowany?). Obecne moduły zostają - działają z nowym SDK, a skrypt można uruchomić ponownie później."
+        return
+    }
+    foreach ($m in $manifest.modules) {
+        $target = Join-Path $ModulesDir $m.name
+        if (-not (Test-Path $target)) { continue }   # klient nie ma tego modułu, nie dokładamy
+        $new = "$target.new"
+        if ($ModulesUrl) { Invoke-WebRequest -Uri "$base/$($m.name)" -OutFile $new -UseBasicParsing }
+        else { Copy-Item (Join-Path $base $m.name) $new }
+        $hash = (Get-FileHash $new -Algorithm SHA256).Hash.ToLower()
+        if ($m.sha256 -and $hash -ne $m.sha256) { Remove-Item $new; throw "Suma SHA-256 $($m.name) nie zgadza się z manifestem" }
+        Move-Item $new $target -Force
+        Write-Host "Podmieniono $($m.name) (komplet dla SDK $ShortVersion, zbudowany $($manifest.built), testy na żywo: $($manifest.testedLive))"
+    }
+}
 
 $ErrorActionPreference = 'Stop'
 $ftp = 'https://ftp.insertcdn.pl/pub/aktualizacje/InsERT_nexo'
@@ -103,6 +144,10 @@ try {
 
     if (Test-Path (Join-Path $modules 'Nexo.zip')) {
         Write-Warning "W Modules jest jeszcze Nexo.zip sprzed podziału modułu - niesie własny NexoClient i SDK, usuń go."
+    }
+
+    if ($ModulesUrl -or $ModulesPath) {
+        Update-ModuleSet (($sdkVersion -split '\.')[0..2] -join '.') $modules
     }
 
     if ($NoRestart) {

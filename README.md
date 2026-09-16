@@ -72,6 +72,16 @@ To wszystko: skrypt pobiera SDK, podmienia `Nexo.Sdk.zip` i restartuje usługę.
 wiążą się z SDK po nazwie zestawu. Bez SDK w `Modules\` metody Nexo nie powstają wcale, runner loguje
 `Metoda ... nie została utworzona ... 'InsERT.Moria.Sfera'`, a pozostałe moduły działają.
 
+Jeśli komplety modułów zbudowane pod kolejne wersje SDK są publikowane (`build-modules.ps1` z repo
+zapqio-modules), skrypt podmieni przy okazji także moduły, którymi klient już dysponuje:
+
+```powershell
+.\update-nexo-sdk.ps1 -Version 61.1.1 -ModulesUrl https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}
+```
+
+Gdy kompletu dla tej wersji jeszcze nie ma, skrypt zostawia obecne moduły z ostrzeżeniem; działają dalej,
+a uruchomienie później dociągnie komplet.
+
 Programista jest potrzebny tylko wtedy, gdy InsERT zmienił w SDK składową, z której korzysta któryś
 moduł. Wychodzi to przy kompilacji modułu przeciw nowemu SDK (`-p:NexoSdkVersion=<wersja>`), a nie
 przy podmianie paczki.
