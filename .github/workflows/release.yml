@@ -1,0 +1,195 @@
+# Jak wydać nowy release:
+#
+#   1. Podbij <Version> w Nexo.Connection.csproj (np. 1.1.0 -> 1.1.1)
+#   2. Commit i push na main:
+#        git add Nexo.Connection.csproj
+#        git commit -m "Release v1.1.1"
+#        git push
+#
+# Workflow sam założy tag v<Version>, pobierze SDK InsERT nexo z publicznego FTP (wersja
+# z build/Zapqio.Nexo.Connection.props - ta sama, przeciw której kompilują się konsumenci;
+# DLL-ki SDK trafiają do cache GitHuba, więc kolejne wydania tej samej wersji SDK FTP omijają),
+# zbuduje paczki i opublikuje release na GitHubie z plikami:
+#   Nexo.Connection.zip                    - paczka do Modules\ runnera; stała nazwa, więc
+#                                            releases/latest/download/Nexo.Connection.zip
+#                                            zawsze wskazuje najnowszą (tak pobiera ją instalator)
+#   Zapqio.Nexo.Connection.<Version>.nupkg - paczka NuGet dla modułów konsumenckich
+# Push bez zmiany <Version> niczego nie wydaje (tag już istnieje, kroki są pomijane).
+# AssemblyVersion zostaje 1.0.0.0 niezależnie od <Version> - patrz komentarz w csproj.
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wersja paczki z csproj, wersja SDK z props
+        id: ver
+        shell: bash
+        run: |
+          version=$(grep -oP '<Version>\K[^<]+' Nexo.Connection.csproj)
+          sdk=$(grep -oP '<NexoSdkVersion[^>]*>\K[^<]+' build/Zapqio.Nexo.Connection.props)
+          sdk_short=$(echo "$sdk" | cut -d. -f1-3)
+          if [ -z "$version" ] || [ -z "$sdk" ]; then
+            echo "Nie odczytano <Version> z csproj albo <NexoSdkVersion> z props" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
+          echo "sdk_short=$sdk_short" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code origin "refs/tags/v$version" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$version już istnieje - bez release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Release v$version, SDK $sdk (plik nexoSDK_${sdk_short//./_}.exe)."
+          fi
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.ver.outputs.exists == 'false'
+        with:
+          dotnet-version: 8.0.x
+
+      # Referencje w props wskazują C:\nexoSDK_<wersja>\Bin; na runnerze GitHuba SDK nie ma,
+      # więc pobieramy je z FTP InsERT tak jak update-nexo-sdk.ps1. Same DLL-ki z Bin (tyle potrzebuje
+      # kompilacja) idą do cache pod kluczem z wersją z props: kolejne wydania tej samej wersji omijają
+      # FTP. GitHub kasuje wpisy cache nieużywane przez 7 dni, więc przy rzadkich wydaniach i tak pobierze.
+      - name: Cache SDK
+        if: steps.ver.outputs.exists == 'false'
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: C:\nexoSDK
+          key: nexo-sdk-${{ steps.ver.outputs.sdk }}
+
+      # Plik to 7-Zip SFX (~490 MB); 7z jest na obrazie windows-latest, więc rozpakowanie bez
+      # uruchamiania pobranego exe. Z rozpakowanego SDK zostają tylko *.dll z Bin: exe, pomoc, zasoby
+      # i podkatalogi (drugie ~600 MB) do kompilacji nie są potrzebne, a spuchłyby w cache.
+      - name: Pobierz SDK InsERT nexo
+        if: steps.ver.outputs.exists == 'false' && steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $file = 'nexoSDK_' + ('${{ steps.ver.outputs.sdk_short }}' -replace '\.', '_') + '.exe'
+          $url = "https://ftp.insertcdn.pl/pub/aktualizacje/InsERT_nexo/$file"
+          Write-Host "Pobieram $url"
+          Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
+          Write-Host ("Pobrano {0:N0} MB, rozpakowuję" -f ((Get-Item $file).Length / 1MB))
+          7z x $file -oC:\nexoSDK -y | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            # Zapas, gdyby 7z nie rozpoznał SFX-a: uruchomienie go tak, jak robi to update-nexo-sdk.ps1 u klienta
+            Write-Warning "7z zakończył się kodem $LASTEXITCODE - rozpakowuję przez uruchomienie SFX"
+            $p = Start-Process -FilePath (Resolve-Path $file).Path -ArgumentList @('-y', '-oC:\nexoSDK') -Wait -PassThru -NoNewWindow
+            if ($p.ExitCode -ne 0) { throw "SFX zakończył się kodem $($p.ExitCode)" }
+          }
+          Remove-Item $file
+          Get-ChildItem C:\nexoSDK -Recurse -File |
+            Where-Object { $_.Extension -ne '.dll' -or $_.Directory.Name -ne 'Bin' } |
+            Remove-Item -Force
+          Get-ChildItem C:\nexoSDK -Recurse -Directory | Sort-Object FullName -Descending |
+            Where-Object { -not (Get-ChildItem $_.FullName -Force) } |
+            Remove-Item -Force
+          $kept = Get-ChildItem C:\nexoSDK -Recurse -File
+          Write-Host ("Zostaje {0} DLL ({1:N0} MB)" -f $kept.Count, (($kept | Measure-Object Length -Sum).Sum / 1MB))
+
+      - name: SDK InsERT nexo
+        if: steps.ver.outputs.exists == 'false'
+        id: sdk
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem C:\nexoSDK -Directory -Filter Bin -Recurse | Select-Object -First 1
+          if (-not $bin) { throw 'W rozpakowanym SDK nie ma katalogu Bin' }
+          $sfera = Join-Path $bin.FullName 'InsERT.Moria.Sfera.dll'
+          if (-not (Test-Path $sfera)) { throw "W $($bin.FullName) nie ma InsERT.Moria.Sfera.dll" }
+          $found = ([Diagnostics.FileVersionInfo]::GetVersionInfo($sfera).ProductVersion -split '\+')[0]
+          Write-Host "SDK $found w $($bin.FullName)"
+          if ($found -ne '${{ steps.ver.outputs.sdk }}') {
+            Write-Warning "props ma NexoSdkVersion ${{ steps.ver.outputs.sdk }}, a pobrany SDK to $found - podbij wartość w props"
+          }
+          "bin=$($bin.FullName)\" >> $env:GITHUB_OUTPUT
+          "found=$found" >> $env:GITHUB_OUTPUT
+
+      # Publish daje bin\Release\Nexo.Connection.zip (target ZipAfterPublish) i, przez
+      # GeneratePackageOnBuild, bin\Release\Zapqio.Nexo.Connection.<Version>.nupkg.
+      - name: Publish
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: dotnet publish Nexo.Connection.csproj -c Release "-p:nexoSdkBinPath=${{ steps.sdk.outputs.bin }}"
+
+      - name: Sprawdź paczki
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $zip = 'bin/Release/Nexo.Connection.zip'
+          $nupkg = 'bin/Release/Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg'
+          foreach ($f in $zip, $nupkg) { if (-not (Test-Path $f)) { throw "Brak $f" } }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
+          try { $entries = @($archive.Entries | ForEach-Object { $_.FullName }) } finally { $archive.Dispose() }
+          foreach ($name in 'Nexo.Connection.dll', '##Dll', '##Shared', 'update-nexo-sdk.ps1') {
+            if ($entries -notcontains $name) { throw "W $zip brakuje $name" }
+          }
+          $sdkFiles = @($entries | Where-Object { $_ -like 'InsERT.*' })
+          if ($sdkFiles.Count -gt 0) {
+            throw "W $zip jest SDK ($($sdkFiles -join ', ')) - SDK ma jechać w Nexo.Sdk.zip, sprawdź NexoSdkCopyLocal w csproj"
+          }
+          Write-Host "Nexo.Connection.zip: $($entries -join ', ')"
+          Write-Host "NuGet: $nupkg"
+
+      - name: Utwórz release
+        if: steps.ver.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          body: |
+            `Nexo.Connection.zip` do `Modules\` runnera (obok `Nexo.Sdk.zip` z SDK w wersji Subiekta klienta),
+            `Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg` dla modułów konsumenckich.
+            Skompilowano przeciw SDK InsERT nexo ${{ steps.sdk.outputs.found }}; działa z każdą wersją SDK
+            (stała AssemblyVersion zestawów InsERT).
+          files: |
+            bin/Release/Nexo.Connection.zip
+            bin/Release/Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg
+          generate_release_notes: true
+
+      - name: Podsumowanie
+        shell: bash
+        run: |
+          version="${{ steps.ver.outputs.version }}"
+          next=$(echo "$version" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }')
+
+          if [ "${{ steps.ver.outputs.exists }}" = "false" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## Release v$version opublikowany 🎉
+
+          Paczki: \`Nexo.Connection.zip\`, \`Zapqio.Nexo.Connection.$version.nupkg\` (SDK ${{ steps.sdk.outputs.found }})
+          SUMMARY
+          else
+            cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## Bez release - wersja v$version jest już wydana
+
+          Ten push nie zmienił \`<Version>\` w csproj, więc niczego nie opublikowano.
+          SUMMARY
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+
+          ### Jak wydać kolejny release (np. v$next)
+
+          1. W \`Nexo.Connection.csproj\` zmień \`<Version>$version</Version>\` na \`<Version>$next</Version>\`
+          2. Wykonaj:
+
+          \`\`\`
+          git add Nexo.Connection.csproj
+          git commit -m "Release v$next"
+          git push
+          \`\`\`
+          SUMMARY

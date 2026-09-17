@@ -29,8 +29,8 @@
   Tylko podmiana zipa, bez restartu usługi (np. sprawdzenie bez zainstalowanej usługi).
 
 .PARAMETER ModulesUrl
-  Skąd brać komplet modułów zbudowany pod tę wersję SDK (build-modules.ps1): adres HTTP z {version},
-  np. https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}. Podmieniane są tylko
+  Skąd brać komplet modułów zbudowany pod tę wersję SDK: adres HTTP z {version}, pod nim manifest.json z listą zipów,
+  np. https://serwer.firma.pl/zapqio/sdk-{version}. Podmieniane są tylko
   te zipy, które już leżą w Modules. Brak kompletu = ostrzeżenie, obecne moduły zostają.
 
 .PARAMETER ModulesPath
@@ -50,7 +50,7 @@
   .\update-nexo-sdk.ps1 -Version 61.1.1
 
 .EXAMPLE
-  .\update-nexo-sdk.ps1 -Version 61.1.1 -ModulesUrl https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}
+  .\update-nexo-sdk.ps1 -Version 61.1.1 -ModulesUrl https://serwer.firma.pl/zapqio/sdk-{version}
 
 .EXAMPLE
   .\update-nexo-sdk.ps1 -SdkDir C:\nexoSDK_61.1.0.9431\Bin -RunnerDir D:\zapqio\runner -NoRestart

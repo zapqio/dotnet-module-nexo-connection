@@ -40,7 +40,7 @@ namespace Nexo
 
             /// <summary>
             /// Skąd brać komplet modułów zbudowany pod nową wersję SDK, adres z {version}
-            /// (np. https://github.com/HDWR-Global/zapqio-modules/releases/download/sdk-{version}). Puste = tylko SDK.
+            /// (np. https://serwer.firma.pl/zapqio/sdk-{version}, w środku manifest.json z listą zipów). Puste = tylko SDK.
             /// </summary>
             public string ModulesUrl { get; set; }
 
