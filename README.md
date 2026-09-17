@@ -199,3 +199,5 @@ zmiana nie łamie API: moduł skompilowany przeciw 1.0.0 działa z każdym zipem
 `2.0.0.0` i przebudowa wszystkich konsumentów.
 
 Wersja Subiekta nie ma z tym nic wspólnego: SDK żyje w `Nexo.Sdk.zip` i podmienia go skrypt.
+#   d o t n e t - m o d u l e - n e x o - c o n n e c t i o n  
+ 
