@@ -579,8 +579,8 @@ try {
     Write-Host "  Konfiguracja: $configPath"
     Write-Host "  Skrypt podmiany SDK: $updateScript (po aktualizacji Subiekta moduł uruchamia go sam)"
     Write-Host ''
-    Write-Host 'Sprawdzenie: w panelu Web uruchom na tym runnerze metodę "Nexo: Who am I" - zwraca operatora, wersję SDK'
-    Write-Host 'oraz serwer i bazę. Błąd zadania mówi wprost, co poprawić (SDK, dane SQL albo hasło operatora).'
+    Write-Host 'Sprawdzenie: w panelu Web uruchom na tym runnerze metodę "Nexo: Who am I" - zwraca operatora oraz wersję'
+    Write-Host 'i paczkę SDK. Błąd zadania mówi wprost, co poprawić (SDK, dane SQL albo hasło operatora).'
     Write-Host "Paczki z metodami (np. Nexo.Invoices.zip) wrzucaj do $modulesDir i restartuj usługę."
 } finally {
     # Remove-Item wykrzacza się na ścieżkach ze skróconą nazwą 8.3 (np. C:\Users\UKASZ~1),

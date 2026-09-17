@@ -2,8 +2,8 @@
 
 Moduł współdzielony dla [Zapqio Runner](https://github.com/zapqio/runner-dotnet): jedno połączenie
 do InsERT nexo (Subiekt) przez Sferę, wspólne dla wszystkich modułów Nexo na tym samym runnerze.
-Ma jedną metodę, **„Nexo: Who am I”** - sprawdzenie instalacji (operator Sfery, wersja SDK, serwer
-i baza). Poza tym dostarcza:
+Ma jedną metodę, **„Nexo: Who am I”** - sprawdzenie instalacji (operator Sfery, wersja
+i paczka SDK). Poza tym dostarcza:
 
 - `Nexo.NexoClient` - singleton z uchwytem Sfery (`Uchwyt`), wstrzykiwany do metod innych modułów,
 - `Nexo.ConnectionSettings` - dane połączenia z pliku `nexoModule.json`,
@@ -55,9 +55,9 @@ Ponowne uruchomienie działa jak aktualizacja: dane połączenia zostają (pyta 
 jest podmieniany na najnowszy, SDK podmieniane tylko przy zmianie wersji Subiekta. Stary `Nexo.zip` sprzed
 podziału na SDK + Connection jest przemianowywany na `Nexo.zip.old`.
 
-Sprawdzenie: w panelu Web uruchom **"Nexo: Who am I"** - zwraca sygnaturę operatora, wersję i paczkę SDK
-oraz serwer i bazę z konfiguracji. Błąd tego zadania to zawsze jedno z czterech: brak paczki w `Modules\`,
-SDK w innej wersji niż Subiekt, dane połączenia SQL albo hasło operatora - komunikat mówi, które.
+Sprawdzenie: w panelu Web uruchom **"Nexo: Who am I"** - zwraca sygnaturę operatora oraz wersję i paczkę SDK.
+Błąd tego zadania to zawsze jedno z czterech: brak paczki w `Modules\`, SDK w innej wersji niż Subiekt, dane
+połączenia SQL albo hasło operatora - komunikat mówi, które.
 Paczki z metodami (np. `Nexo.Invoices.zip`) wrzucasz do `Modules\` i restartujesz usługę.
 
 ### Ręcznie, bez instalatora
@@ -168,7 +168,7 @@ przy podmianie paczki.
 Wymagania: .NET SDK 8, SDK InsERT nexo w `C:\nexoSDK_<wersja>\Bin\` do kompilacji oraz paczki NuGet
 `Zapqio.Runner.Module.Core` i `Zapqio.Nexo.Connection` w źródle, które widzi `dotnet restore`.
 
-Csproj (wzorzec: [module-nexo-testconnect](https://github.com/zapqio/module-nexo-testconnect)):
+Csproj (wzorzec: [module-nexo-testconnect](https://github.com/zapqio/dotnet-module-nexo-test)):
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">

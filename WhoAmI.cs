@@ -38,9 +38,7 @@ namespace Nexo
             {
                 Operator = user.Sygnatura,
                 SdkVersion = _client.SdkVersion,
-                SdkPackage = _client.SdkPackage,
-                DatabaseServer = _settings.Connect.DatabaseServer,
-                DatabaseName = _settings.Connect.DatabaseName,
+                SdkPackage = _client.SdkPackage
             };
             var json = JsonSerializer.Serialize(output);
             Console.WriteLine(json);
@@ -58,9 +56,6 @@ namespace Nexo
             /// <summary>Nazwa paczki w Modules\, z której załadowano SDK (Nexo.Sdk).</summary>
             public string SdkPackage { get; set; }
 
-            public string DatabaseServer { get; set; }
-
-            public string DatabaseName { get; set; }
         }
     }
 }
