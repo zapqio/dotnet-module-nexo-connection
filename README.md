@@ -2,7 +2,8 @@
 
 Moduł współdzielony dla [Zapqio Runner](https://github.com/zapqio/runner-dotnet): jedno połączenie
 do InsERT nexo (Subiekt) przez Sferę, wspólne dla wszystkich modułów Nexo na tym samym runnerze.
-Sam nie ma żadnej metody. Dostarcza:
+Ma jedną metodę, **„Nexo: Who am I”** - sprawdzenie instalacji (operator Sfery, wersja SDK, serwer
+i baza). Poza tym dostarcza:
 
 - `Nexo.NexoClient` - singleton z uchwytem Sfery (`Uchwyt`), wstrzykiwany do metod innych modułów,
 - `Nexo.ConnectionSettings` - dane połączenia z pliku `nexoModule.json`,
@@ -34,7 +35,7 @@ Kolejność:
    `Modules\Nexo.Sdk.zip`. Masz już rozpakowane SDK: `-SdkDir C:\nexoSDK_61.1.1.9471\Bin`.
 2. `Nexo.Connection.zip` i paczki z metodami do `Modules\`.
 3. Restart usługi. W logu: `Moduł współdzielony: Nexo.Sdk`, `Moduł współdzielony: Nexo.Connection`,
-   `Add injection: Nexo.NexoClient`, `Add method: ...`.
+   `Add injection: Nexo.NexoClient`, `Add method: Nexo.WhoAmI`, potem metody pozostałych modułów.
 4. Przy pierwszym starcie w katalogu runnera powstaje `Config\nexoModule.json` z pustą sekcją `Connect`
    (serwer SQL, baza, użytkownik SQL, operator Subiekta). Do czasu uzupełnienia każde zadanie Nexo kończy
    się błędem `Brak konfiguracji połączenia z Nexo: uzupełnij ... sekcję Connect (...)`. Uzupełnij
@@ -54,6 +55,10 @@ Kolejność:
   "SdkUpdate": { ... }
 }
 ```
+
+5. W panelu Web uruchom **„Nexo: Who am I”**: zwraca sygnaturę operatora, wersję i paczkę SDK oraz serwer
+   i bazę z konfiguracji. Błąd tego zadania to zawsze jedno z czterech: brak paczki w `Modules\`, SDK w innej
+   wersji niż Subiekt, dane połączenia SQL albo hasło operatora - komunikat mówi, które.
 
 Katalog `Config\` ma uprawnienia jak `appsettings.json` runnera (nadaje je `install.ps1`), bo w pliku są
 hasła. Instalacje sprzed tego katalogu, z `nexoModule.json` obok binarki, są przenoszone automatycznie.
@@ -163,13 +168,13 @@ Metoda dostaje klienta przez konstruktor:
 using InsERT.Moria.Uzytkownicy;
 using Zapqio.Runner.Core;
 
-public class WhoAmI : IRunnerMethod
+public class MyMethod : IRunnerMethod
 {
     private readonly NexoClient _client;
 
-    public WhoAmI(NexoClient client) => _client = client;
+    public MyMethod(NexoClient client) => _client = client;
 
-    public string NameMethod() => "Who am I";
+    public string NameMethod() => "My method";
     public Type InData() => null;
     public Type OutData() => null;
 
