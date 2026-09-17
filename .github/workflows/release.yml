@@ -55,10 +55,34 @@ jobs:
             echo "Release v$version, SDK $sdk (plik nexoSDK_${sdk_short//./_}.exe)."
           fi
 
+      # 8 dla Nexo.Connection (net8.0-windows), 10 dla paczki Module.Core z repo runnera (net8.0;net10.0)
       - uses: actions/setup-dotnet@v4
         if: steps.ver.outputs.exists == 'false'
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      # Zapqio.Runner.Module.Core nie jest (jeszcze) na nuget.org, więc paczkę budujemy z publicznego repo
+      # runnera i podpinamy katalog z nupkg jako źródło NuGet. Klon poza workspace: csproj w stylu SDK bierze
+      # **/*.cs z katalogu projektu, więc runner w podkatalogu wszedłby do kompilacji Nexo.Connection.
+      # Wersja w csproj runnera musi być >= tej z PackageReference (NuGet bierze najniższą spełniającą).
+      - name: Zapqio.Runner.Module.Core z repo runnera
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $runner = Join-Path $env:RUNNER_TEMP 'dotnet-runner'
+          git clone --quiet --depth 1 https://github.com/zapqio/dotnet-runner.git $runner
+          # dotnet pack pada z NU5026 przy multi-target + GeneratePackageOnBuild; build generuje paczkę tak samo
+          dotnet build (Join-Path $runner 'Zapqio.Runner.Module.Core') -c Release --nologo -v quiet
+          if ($LASTEXITCODE -ne 0) { throw "Build Module.Core zakończył się kodem $LASTEXITCODE" }
+          $pkg = Get-ChildItem (Join-Path $runner 'Zapqio.Runner.Module.Core\bin\Release') -Filter 'Zapqio.Runner.Module.Core.*.nupkg' | Select-Object -First 1
+          if (-not $pkg) { throw 'Brak nupkg Zapqio.Runner.Module.Core po buildzie' }
+          $source = Join-Path $env:RUNNER_TEMP 'nuget-local'
+          New-Item -ItemType Directory -Path $source | Out-Null
+          Copy-Item $pkg.FullName $source
+          dotnet nuget add source $source -n 'Runner module core'
+          Write-Host "Źródło NuGet: $source ($($pkg.Name))"
 
       # Referencje w props wskazują C:\nexoSDK_<wersja>\Bin; na runnerze GitHuba SDK nie ma,
       # więc pobieramy je z FTP InsERT tak jak update-nexo-sdk.ps1. Same DLL-ki z Bin (tyle potrzebuje
