@@ -255,3 +255,41 @@ zmiana nie łamie API: moduł skompilowany przeciw 1.0.0 działa z każdym zipem
 `2.0.0.0` i przebudowa wszystkich konsumentów.
 
 Wersja Subiekta nie ma z tym nic wspólnego: SDK żyje w `Nexo.Sdk.zip` i podmienia go skrypt.
+
+## Wdrożenia modułów z Weba: Runner i CI
+
+Tryb budowania wybiera się osobno dla każdego repozytorium w Webie. Na jednym runnerze można
+uruchamiać moduły z obu trybów. W obu przypadkach `install-nexo.ps1` instaluje Connection,
+SDK zgodne z bazą i konfigurację połączenia.
+
+### Budowanie na runnerze
+
+Na nowej instalacji uruchom `install-nexo.ps1 -BuildTools`. Na już skonfigurowanym runnerze
+wystarczy poniższy skrypt, w PowerShellu jako administrator; nie pyta ponownie o SQL:
+
+```powershell
+$s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1
+& ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -InstallDir 'C:\zapqio\runner' -ServiceName 'ZapqioRunner'
+```
+
+Skrypt pobiera NuGet Connection w wersji zainstalowanego ZIP-a (sprawdza zgodność DLL), wykorzystuje
+DLL-e z `Modules\Nexo.Sdk.zip` do kompilacji i w razie potrzeby instaluje systemowe SDK .NET 8 x64.
+Pakiety i referencje zapisuje w `Build\`, a ustawienia NuGet i MSBuild w `Deployments\`. Istniejące
+ustawienia zachowuje; dodaje własne wpisy. Nadaje dostęp kontu usługi, sprawdza kompilację małego
+modułu i restartuje runnera. Próba kompilacji działa na koncie instalatora; pierwsze wdrożenie z Weba
+sprawdza pełną ścieżkę na koncie usługi. `-NoRestart` pozwala odłożyć restart.
+
+Ponowne uruchomienie odświeża konfigurację i korzysta z już pobranego NuGet. Uruchom je także po
+zmianie Connection lub gdy chcesz kompilować przeciw nowemu SDK nexo. Repozytorium z własnym
+`Directory.Build.props` powinno zaimportować plik nadrzędny albo jawnie ustawić `nexoSdkBinPath`.
+Własny `NuGet.Config` z `<clear/>` musi uwzględnić źródło `Build\NuGet`.
+
+Lokalny pakiet można podać przez `-ConnectionPackagePath`. Musi odpowiadać dokładnie zainstalowanemu
+Connection. Pozostałe pakiety pobiera NuGet; to nie jest pełny tryb instalacji bez internetu.
+
+### Gotowa paczka z CI
+
+Na serwerze wystarczy zwykły `install-nexo.ps1`. SDK .NET do kompilacji i źródło NuGet przygotowuje
+workflow repozytorium na maszynie GitHub Actions. Web wymaga artefaktu `zapqio-module`, zawierającego
+`module.zip`, z udanego workflow dla dokładnie wybranego commita. ZIP z GitHub Releases nie zastępuje
+tego artefaktu. Wzorcowy workflow jest w `dotnet-module-nexo-test/.github/workflows/build.yml`.

@@ -64,6 +64,13 @@
     Lokalny Nexo.Connection.zip (np. z bin\Release po dotnet publish) zamiast pobierania z GitHub Releases;
     -Version jest wtedy bez znaczenia. Razem z -SdkDir daje instalację bez dostępu do internetu.
 
+.PARAMETER BuildTools
+    Przygotowuje także budowanie modułów nexo na runnerze: SDK .NET, referencje SDK nexo i lokalne
+    źródło NuGet widoczne dla konta usługi. Dla repozytoriów w trybie CI nie jest potrzebne.
+
+.PARAMETER ConnectionPackagePath
+    Lokalny NuGet Connection dla -BuildTools zamiast pobierania go z GitHub Releases.
+
 .PARAMETER NoRestart
     Bez restartu usługi na końcu (nowe paczki zostaną wczytane przy następnym starcie).
 
@@ -100,6 +107,8 @@ param(
     [string]$SubiektVersion,
     [string]$SdkDir,
     [string]$PackagePath,
+    [switch]$BuildTools,
+    [string]$ConnectionPackagePath,
     [switch]$NoRestart
 )
 
@@ -511,6 +520,33 @@ try {
     }
     if ($dbVersion -and $installedSdk -and (Get-ShortVersion $installedSdk) -ne (Get-ShortVersion $dbVersion)) {
         Write-Warning "SDK $installedSdk w $sdkZip nie zgadza się z wersją Subiekta z bazy ($dbVersion) - Sfera odrzuci połączenie. Uruchom: $updateScript -Version $(Get-ShortVersion $dbVersion) -RunnerDir $InstallDir"
+    }
+
+    # Opcjonalne środowisko kompilacji; dane SQL i SDK runtime są już przygotowane.
+    if ($BuildTools) {
+        $buildScript = Join-Path $tempDir 'install-nexo-build.ps1'
+        $localBuildScript = $null
+        if ($PSScriptRoot) {
+            $localBuildScript = Join-Path $PSScriptRoot 'install-nexo-build.ps1'
+        }
+
+        if ($localBuildScript -and (Test-Path -LiteralPath $localBuildScript)) {
+            Copy-Item -LiteralPath $localBuildScript -Destination $buildScript
+        }
+        else {
+            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1' -OutFile $buildScript -UseBasicParsing
+        }
+
+        $buildArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $buildScript,
+                       '-InstallDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart')
+        if ($ConnectionPackagePath) {
+            $buildArgs += @('-ConnectionPackagePath', $ConnectionPackagePath)
+        }
+
+        & powershell.exe @buildArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Przygotowanie budowania modułów nie powiodło się. Popraw błąd i uruchom install-nexo-build.ps1.'
+        }
     }
 
     # --- 7. Restart i sprawdzenie w logu ---------------------------------------------------------
