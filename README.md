@@ -1,4 +1,4 @@
-# Zapqio Runner - moduł Nexo.Connection
+﻿# Zapqio Runner - moduł Nexo.Connection
 
 Moduł współdzielony dla [Zapqio Runner](https://github.com/zapqio/runner-dotnet): jedno połączenie
 do InsERT nexo (Subiekt) przez Sferę, wspólne dla wszystkich modułów Nexo na tym samym runnerze.
@@ -295,23 +295,41 @@ $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/
 & ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -InstallDir 'C:\zapqio\runner' -ServiceName 'ZapqioRunner'
 ```
 
-Skrypt pobiera NuGet Connection w wersji zainstalowanego ZIP-a (sprawdza zgodność DLL), wykorzystuje
-DLL-e z `Modules\Nexo.Sdk.zip` do kompilacji i w razie potrzeby instaluje systemowe SDK .NET 8 x64.
-Obecny instalator narzędzi nadal buduje lokalną paczkę Core 1.2.0
-z przypiętego commita runnera `057df4873e1641c772f57cb124b8d06a4656f219`, wyłącznie dla .NET 8,
-i dodaje ją do tego samego lokalnego źródła NuGet. Nie wymaga Git ani kopiowania plików z komputera autora.
-Pakiety i referencje zapisuje w `Build\`, a ustawienia NuGet i MSBuild w `Deployments\`. Istniejące
-ustawienia zachowuje; dodaje własne wpisy. Nadaje dostęp kontu usługi, sprawdza kompilację małego
-modułu i restartuje runnera. Próba kompilacji działa na koncie instalatora; pierwsze wdrożenie z Weba
-sprawdza pełną ścieżkę na koncie usługi. `-NoRestart` pozwala odłożyć restart.
+Skrypt pobiera z nuget.org paczkę Connection w dokładnie tej wersji, którą zawiera zainstalowany
+ZIP, i porównuje DLL obu plików. Core `1.2.0` jest przywracany z nuget.org. Skrypt wykorzystuje
+DLL-e z `Modules\Nexo.Sdk.zip` do kompilacji, a w razie potrzeby instaluje systemowe SDK .NET 8 x64.
+Nie klonuje repozytorium runnera ani nie buduje lokalnej paczki Core.
 
-Ponowne uruchomienie odświeża konfigurację i korzysta z już pobranego NuGet. Uruchom je także po
-zmianie Connection lub gdy chcesz kompilować przeciw nowemu SDK nexo. Repozytorium z własnym
-`Directory.Build.props` powinno zaimportować plik nadrzędny albo jawnie ustawić `nexoSdkBinPath`.
-Własny `NuGet.Config` z `<clear/>` musi uwzględnić źródło `Build\NuGet`.
+SDK i cache NuGet trafiają do `Build\`. Skrypt zapisuje zarządzany `Deployments\NuGet.Config`
+oraz referencję SDK w `Deployments\Directory.Build.props`. Ustawia konto usługi: prawa zapisu,
+`PATH`, `DOTNET_CLI_HOME` i `NUGET_PACKAGES`. Sprawdza kompilację próbnego modułu i restartuje
+runnera, chyba że podano `-NoRestart`. Próba kompilacji działa na koncie instalatora; pierwsze
+wdrożenie z Weba sprawdza pełną ścieżkę na koncie usługi.
 
-Lokalny pakiet można podać przez `-ConnectionPackagePath`. Musi odpowiadać dokładnie zainstalowanemu
-Connection. Pozostałe pakiety pobiera NuGet; to nie jest pełny tryb instalacji bez internetu.
+Nowa instalacja wymaga Connection `1.1.3` lub nowszego wydania dostępnego na nuget.org wraz
+z odpowiadającym ZIP-em z GitHub Releases. Skrypt nie zastępuje brakującej wersji przez `latest`
+i nie ma automatycznego fallbacku do starszych wydań lub lokalnego Core.
+
+Uruchom setup ponownie po zmianie Connection lub SDK nexo. Repozytorium z własnym
+`Directory.Build.props` powinno importować plik nadrzędny albo ustawić `nexoSdkBinPath`.
+Prywatne źródła paczek można skonfigurować w `NuGet.Config` repozytorium, zachowując dostęp
+do nuget.org. Domyślnie instalator nie tworzy lokalnego źródła NuGet.
+
+`-ConnectionPackagePath` pozostaje jawną opcją dla lokalnie zbudowanego Connection. DLL musi
+odpowiadać zainstalowanemu ZIP-owi. Tylko ta paczka trafia wtedy do osobnego źródła i cache
+pod `Build\LocalConnection\<hash>`. Mapowanie źródeł przypisuje Connection do tego katalogu,
+a pozostałe paczki, w tym Core, do nuget.org. Nie jest to pełny tryb offline.
+
+Test instalatora dla nowego środowiska:
+
+```powershell
+.\tests\Test-BuildSetup.ps1 -ConnectionZip 'C:\pakiety\Nexo.Connection.zip' -SdkZip 'C:\pakiety\Nexo.Sdk.zip'
+```
+
+Wymaga zainstalowanego systemowego .NET SDK 8 lub nowszego i dostępu do nuget.org.
+Tworzy izolowany katalog tymczasowy, sprawdza kompilację oraz zgodność paczek.
+Nie zakłada usługi Windows ani nie łączy się z bazą Nexo. ZIP Connection musi odpowiadać
+publicznej paczce NuGet, a SDK ma zawierać biblioteki potrzebne do kompilacji.
 
 ### Gotowa paczka z CI
 

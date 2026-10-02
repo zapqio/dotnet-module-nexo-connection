@@ -4,12 +4,13 @@
     Przygotowuje zainstalowanego runnera do budowania modulow nexo z repozytoriow Weba.
 .DESCRIPTION
     Uruchom po install-nexo.ps1. Wykorzystuje Modules\Nexo.Sdk.zip, pobiera NuGet Connection
-    w wersji zainstalowanego modulu oraz buduje NuGet Module.Core z przypietego commita runnera.
+    w wersji zainstalowanego modulu z nuget.org. Module.Core przywraca z nuget.org.
     Konfiguruje Deployments i sprawdza kompilacje.
     W razie braku SDK .NET instaluje systemowe SDK 8 x64. Nie zmienia danych SQL.
     Tryb CI w Webie nie wymaga uruchamiania tego skryptu na serwerze.
 .PARAMETER ConnectionPackagePath
-    Lokalny plik Zapqio.Nexo.Connection.<wersja>.nupkg zamiast pobierania z GitHub Releases.
+    Lokalny plik Zapqio.Nexo.Connection.<wersja>.nupkg zamiast pobierania z nuget.org.
+    Musi zawierac DLL zgodna z zainstalowanym ZIP-em. Core nadal pochodzi z nuget.org.
 .PARAMETER NoRestart
     Nie restartuje uslugi. Nowe ustawienia srodowiska zadzialaja po jej restarcie.
 #>
@@ -69,89 +70,31 @@ function Save-Xml($Xml, [string]$Path) {
     }
 }
 
-function Set-NuGetValue($Xml, [string]$Section, [string]$Key, [string]$Value) {
-    $parent = $Xml.DocumentElement.SelectSingleNode($Section)
-    if (-not $parent) {
-        $parent = $Xml.CreateElement($Section)
-        [void]$Xml.DocumentElement.AppendChild($parent)
+function Write-BuildNuGetConfig([string]$Path, [string]$PackageCache, [string]$LocalSource) {
+    $escapedCache = [Security.SecurityElement]::Escape($PackageCache)
+    $localEntry = ''
+    $sourceMapping = ''
+    if ($LocalSource) {
+        $escapedSource = [Security.SecurityElement]::Escape($LocalSource)
+        $localEntry = '<add key="ZapqioConnectionOverride" value="' + $escapedSource + '" />'
+        $sourceMapping = '<packageSourceMapping><packageSource key="nuget.org"><package pattern="*" /></packageSource><packageSource key="ZapqioConnectionOverride"><package pattern="Zapqio.Nexo.Connection" /></packageSource></packageSourceMapping>'
     }
 
-    $node = $parent.SelectSingleNode("add[@key='$Key']")
-    if (-not $node) {
-        $node = $Xml.CreateElement('add')
-        $node.SetAttribute('key', $Key)
-        [void]$parent.AppendChild($node)
-    }
-
-    $node.SetAttribute('value', $Value)
-}
-
-function Install-ModuleCorePackage([string]$Dotnet, [string]$Feed, [string]$Work) {
-    # Ten sam kontrakt co runner 0.2.1; nie korzystamy z ruchomej galezi main ani z cache autora.
-    $commit = '057df4873e1641c772f57cb124b8d06a4656f219'
-    $version = '1.2.0'
-    $packageName = "Zapqio.Runner.Module.Core.$version.nupkg"
-    $destination = Join-Path $Feed $packageName
-    $cached = $false
-    if (Test-Path -LiteralPath $destination) {
-        $archive = [IO.Compression.ZipFile]::OpenRead($destination)
-        try {
-            $cached = $null -ne $archive.GetEntry('lib/net8.0/Zapqio.Runner.Module.Core.dll')
-        }
-        finally {
-            $archive.Dispose()
-        }
-    }
-
-    if ($cached) {
-        Write-Host "==> NuGet Module.Core $version jest juz w lokalnym zrodle."
-        return
-    }
-
-    Write-Host "==> Przygotowuje NuGet Module.Core $version ze zrodel runnera ($commit)..."
-    $sourceZip = Join-Path $Work 'module-core-source.zip'
-    Invoke-WebRequest -Uri "https://github.com/zapqio/dotnet-runner/archive/$commit.zip" -OutFile $sourceZip -UseBasicParsing
-    $source = Join-Path $Work 'module-core-source'
-    [void][IO.Directory]::CreateDirectory($source)
-    $archive = [IO.Compression.ZipFile]::OpenRead($sourceZip)
-    try {
-        $prefix = "dotnet-runner-$commit/Zapqio.Runner.Module.Core/"
-        foreach ($entry in $archive.Entries) {
-            if ($entry.FullName.StartsWith($prefix, [StringComparison]::Ordinal)) {
-                $name = $entry.FullName.Substring($prefix.Length)
-                # Przypiety projekt sklada sie tylko z plikow C# i csproj w katalogu glownym.
-                if ($name -match '^[a-zA-Z0-9_.-]+\.(cs|csproj)$') {
-                    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $source $name))
-                }
-            }
-        }
-    }
-    finally {
-        $archive.Dispose()
-    }
-
-    $project = Join-Path $source 'Zapqio.Runner.Module.Core.csproj'
-    if (-not (Test-Path -LiteralPath $project)) {
-        throw 'W archiwum runnera brakuje projektu Module.Core.'
-    }
-
-    # Budujemy tylko net8.0: serwer z samym SDK 8 nie moze odtwarzac celu net10.0.
-    # Projekt nie ma PackageReference. Oddzielny config pomija prywatne zrodla uzytkownika.
-    $config = Join-Path $Work 'module-core.NuGet.Config'
-    [IO.File]::WriteAllText($config, '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json"/></packageSources><fallbackPackageFolders><clear/></fallbackPackageFolders></configuration>')
-    $output = Join-Path $Work 'module-core-packages'
-    & $Dotnet build $project -c Release --nologo -v quiet '-p:TargetFrameworks=net8.0' "-p:PackageOutputPath=$output" "-p:RestoreConfigFile=$config"
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Nie udalo sie zbudowac paczki NuGet Module.Core.'
-    }
-
-    $builtPackage = Join-Path $output $packageName
-    if (-not (Test-Path -LiteralPath $builtPackage)) {
-        throw "Kompilacja nie utworzyla $packageName."
-    }
-
-    Copy-Item -LiteralPath $builtPackage -Destination $destination -Force
-    Write-Host "==> NuGet Module.Core $version dodany do $Feed."
+    # This managed configuration is for new build environments. Private project feeds
+    # can be configured in a repository's own NuGet.Config.
+    [xml]$config = @"
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+    $localEntry
+  </packageSources>
+  $sourceMapping
+  <fallbackPackageFolders><clear /></fallbackPackageFolders>
+  <config><add key="globalPackagesFolder" value="$escapedCache" /></config>
+</configuration>
+"@
+    Save-Xml $config $Path
 }
 
 function Get-BuildDotnet([string]$Work) {
@@ -213,10 +156,11 @@ if ($service) {
 
 $build = Join-Path $InstallDir 'Build'
 $deployments = Join-Path $InstallDir 'Deployments'
-$feed = Join-Path $build 'NuGet'
+$packageCache = Join-Path $build 'Packages'
+$localSource = $null
 $work = Join-Path $build ('setup-' + [guid]::NewGuid().ToString('N'))
 $probe = $null
-foreach ($directory in $build, $deployments, $feed, $work) {
+foreach ($directory in $build, $deployments, $work) {
     [void][IO.Directory]::CreateDirectory($directory)
 }
 
@@ -242,16 +186,18 @@ try {
 
     $packageName = "Zapqio.Nexo.Connection.$connectionVersion.nupkg"
     $packagePath = Join-Path $work $packageName
-    $cachedPackage = Join-Path $feed $packageName
     if ($ConnectionPackagePath) {
         Copy-Item -LiteralPath $ConnectionPackagePath -Destination $packagePath
     }
-    elseif (Test-Path -LiteralPath $cachedPackage) {
-        Copy-Item -LiteralPath $cachedPackage -Destination $packagePath
-    }
     else {
         Write-Host "==> Pobieram NuGet Connection $connectionVersion..."
-        Invoke-WebRequest -Uri "https://github.com/zapqio/dotnet-module-nexo-connection/releases/download/v$connectionVersion/$packageName" -OutFile $packagePath -UseBasicParsing
+        $packageUrl = "https://api.nuget.org/v3-flatcontainer/zapqio.nexo.connection/$connectionVersion/zapqio.nexo.connection.$connectionVersion.nupkg"
+        try {
+            Invoke-WebRequest -Uri $packageUrl -OutFile $packagePath -UseBasicParsing
+        }
+        catch {
+            throw "Nie mozna pobrac Zapqio.Nexo.Connection $connectionVersion z nuget.org. Wymagana jest dokladnie wersja zainstalowanego ZIP-a. Sprawdz publikacje tej wersji lub podaj -ConnectionPackagePath. Blad: $($_.Exception.Message)"
+        }
     }
 
     $package = [IO.Compression.ZipFile]::OpenRead($packagePath)
@@ -262,6 +208,7 @@ try {
         }
 
         [void](Read-ZipText $package 'build/Zapqio.Nexo.Connection.props')
+        [void](Read-ZipText $package 'build/Zapqio.Nexo.Connection.targets')
         $reference = $package.GetEntry('lib/net8.0-windows7.0/Nexo.Connection.dll')
         if (-not $reference) {
             throw 'NuGet nie zawiera Nexo.Connection.dll dla net8.0-windows7.0.'
@@ -277,7 +224,15 @@ try {
         $package.Dispose()
     }
 
-    Copy-Item -LiteralPath $packagePath -Destination $cachedPackage -Force
+    if ($ConnectionPackagePath) {
+        # Separate an explicit local package from public packages with the same ID/version.
+        $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $localRoot = Join-Path $build ("LocalConnection\" + $packageHash)
+        $localSource = Join-Path $localRoot 'Source'
+        $packageCache = Join-Path $localRoot 'Packages'
+        [void][IO.Directory]::CreateDirectory($localSource)
+        Copy-Item -LiteralPath $packagePath -Destination (Join-Path $localSource $packageName) -Force
+    }
 
     $sdkZipPath = Join-Path $modules 'Nexo.Sdk.zip'
     $sdkHash = (Get-FileHash -LiteralPath $sdkZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -303,13 +258,8 @@ try {
     $sdkVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $sdkBin 'InsERT.Moria.Sfera.dll')).ProductVersion
     Write-Host "==> SDK nexo do kompilacji: $sdkVersion (z zainstalowanego Nexo.Sdk.zip)."
     $dotnet = Get-BuildDotnet $work
-    Install-ModuleCorePackage -Dotnet $dotnet -Feed $feed -Work $work
     $configPath = Join-Path $deployments 'NuGet.Config'
-    $config = Read-Xml $configPath 'configuration'
-    Set-NuGetValue $config 'packageSources' 'ZapqioNexoBuild' $feed
-    Set-NuGetValue $config 'packageSources' 'nuget.org' 'https://api.nuget.org/v3/index.json'
-    Set-NuGetValue $config 'config' 'globalPackagesFolder' (Join-Path $build 'Packages')
-    Save-Xml $config $configPath
+    Write-BuildNuGetConfig -Path $configPath -PackageCache $packageCache -LocalSource $localSource
 
     $propsPath = Join-Path $deployments 'Directory.Build.props'
     $props = Read-Xml $propsPath 'Project'
@@ -337,8 +287,8 @@ try {
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Zapqio.Nexo.Connection" Version="$connectionVersion" ExcludeAssets="runtime" />
-    <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Zapqio.Nexo.Connection" Version="[$connectionVersion]" ExcludeAssets="runtime" />
+    <PackageReference Include="Zapqio.Runner.Module.Core" Version="[1.2.0]" ExcludeAssets="runtime" />
   </ItemGroup>
 </Project>
 "@
@@ -346,13 +296,18 @@ try {
     [IO.File]::WriteAllText((Join-Path $probe 'Probe.cs'), 'using Nexo; using InsERT.Moria.Uzytkownicy; public class Probe { public string Read(NexoClient client) => client.Uchwyt.PodajObiektTypu<IZalogowanyUzytkownik>().Dane.Sygnatura; }')
     Push-Location $probe
     try {
-        & $dotnet build 'Probe.csproj' -c Release --nologo -v quiet "-p:RestoreConfigFile=$configPath"
+        & $dotnet build 'Probe.csproj' -c Release --nologo -v quiet "-p:RestoreConfigFile=$configPath" "-p:RestorePackagesPath=$packageCache"
         if ($LASTEXITCODE -ne 0) {
             throw 'Proba kompilacji nie powiodla sie. Popraw blad widoczny powyzej i uruchom skrypt ponownie.'
         }
     }
     finally {
         Pop-Location
+    }
+
+    $restoredDll = Join-Path $packageCache "zapqio.nexo.connection\$connectionVersion\lib\net8.0-windows7.0\Nexo.Connection.dll"
+    if (-not (Test-Path -LiteralPath $restoredDll) -or (Get-FileHash -LiteralPath $restoredDll).Hash -ne (Get-FileHash -LiteralPath $connectionDll).Hash) {
+        throw 'Przywrocona paczka Connection nie odpowiada DLL w zainstalowanym ZIP-ie.'
     }
 
     if ($service) {
@@ -380,9 +335,10 @@ try {
 
         $dotnetDir = Split-Path -Path $dotnet -Parent
         $pathParts = @($dotnetDir) + @($searchPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $dotnetDir })
-        $environment = @($environment | Where-Object { $_ -notmatch '^(PATH|DOTNET_CLI_HOME)=' })
+        $environment = @($environment | Where-Object { $_ -notmatch '^(PATH|DOTNET_CLI_HOME|NUGET_PACKAGES)=' })
         $environment += 'PATH=' + ($pathParts -join ';')
         $environment += 'DOTNET_CLI_HOME=' + (Join-Path $build 'CliHome')
+        $environment += 'NUGET_PACKAGES=' + $packageCache
         New-ItemProperty -LiteralPath $serviceKey -Name Environment -PropertyType MultiString -Value ([string[]]$environment) -Force | Out-Null
         if (-not $NoRestart) {
             Restart-Service -Name $ServiceName

@@ -65,11 +65,12 @@
     -Version jest wtedy bez znaczenia. Razem z -SdkDir daje instalację bez dostępu do internetu.
 
 .PARAMETER BuildTools
-    Przygotowuje także budowanie modułów nexo na runnerze: SDK .NET, referencje SDK nexo i lokalne
-    źródło NuGet widoczne dla konta usługi. Dla repozytoriów w trybie CI nie jest potrzebne.
+    Przygotowuje także budowanie modułów nexo na runnerze: SDK .NET, referencje SDK nexo oraz
+    pobieranie publicznych paczek NuGet i cache dostępny dla konta usługi. Dla repozytoriów w trybie CI nie jest potrzebne.
 
 .PARAMETER ConnectionPackagePath
-    Lokalny NuGet Connection dla -BuildTools zamiast pobierania go z GitHub Releases.
+    Lokalny NuGet Connection dla -BuildTools zamiast pobierania go z nuget.org.
+    DLL musi odpowiadać ZIP-owi; Core jest nadal pobierany z nuget.org.
 
 .PARAMETER NoRestart
     Bez restartu usługi na końcu (nowe paczki zostaną wczytane przy następnym starcie).
