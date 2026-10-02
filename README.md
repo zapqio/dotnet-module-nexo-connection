@@ -182,8 +182,8 @@ Csproj (wzorzec: [module-nexo-testconnect](https://github.com/zapqio/dotnet-modu
   <ItemGroup>
     <!-- Obie paczki tylko do kompilacji: w runtime kontrakt dostarcza runner, NexoClient przychodzi
          z zipa Nexo.Connection, SDK z zipa Nexo.Sdk. Do zipa tego modułu trafia tylko jego własna DLL. -->
-    <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.0.0" ExcludeAssets="runtime" />
-    <PackageReference Include="Zapqio.Nexo.Connection" Version="1.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Zapqio.Nexo.Connection" Version="1.1.3" ExcludeAssets="runtime" />
   </ItemGroup>
   <Target Name="ZipAfterPublish" AfterTargets="Publish">
     <PropertyGroup>
@@ -196,7 +196,7 @@ Csproj (wzorzec: [module-nexo-testconnect](https://github.com/zapqio/dotnet-modu
 </Project>
 ```
 
-Referencje do SDK przychodzą z paczki (plik `build/Zapqio.Nexo.Connection.props`) z `Private="false"`,
+Referencje do SDK przychodzą z paczki (plik `build/Zapqio.Nexo.Connection.targets`) z `Private="false"`,
 więc nie trzeba ich przepisywać. Inna ścieżka albo wersja SDK do kompilacji to jedna właściwość:
 
 ```xml
@@ -237,6 +237,20 @@ public class MyMethod : IRunnerMethod
 "Moduły współdzielone"). Bez `Nexo.Connection.zip` w `Modules\` metody tego modułu nie powstaną:
 runner zgłosi w logu `Metoda ... nie została utworzona`, a pozostałe moduły będą działać.
 
+## Wybór SDK podczas kompilacji
+
+Biblioteki InsERT muszą być dostępne osobno na komputerze budującym moduł. Publiczny NuGet
+Connection dostarcza naszą bibliotekę i referencje do SDK, bez bibliotek InsERT.
+
+- Bez ustawień używana jest ścieżka `C:\nexoSDK_61.1.0.9431\Bin\`.
+- `NexoSdkVersion` ustawione w projekcie wyznacza ścieżkę `C:\nexoSDK_<wersja>\Bin\`.
+- Jawne `nexoSdkBinPath` ma pierwszeństwo; może wskazywać inny katalog, także bez końcowego ukośnika.
+- Obie właściwości można ustawić w `.csproj`, `Directory.Build.props` lub przez `-p:`.
+
+Przy braku wymaganej biblioteki build kończy się błędem `ZNEXO001` z nazwą brakującego pliku
+i instrukcją przygotowania SDK. Sam restore NuGet nie pobiera SDK InsERT. Na runnerze SDK do
+budowania przygotowuje instalator z `-BuildTools`, a w CI krok pobierania SDK przed publish.
+
 ## Budowanie i wersje
 
 `dotnet publish -c Release` w tym repo daje w `bin\Release\`:
@@ -249,6 +263,15 @@ z `build/Zapqio.Nexo.Connection.props`; DLL-ki SDK zostają w cache GitHuba dla 
 buduje i publikuje release `v<Version>` z obiema paczkami. Push bez zmiany `Version` nic nie wydaje. Najnowszy zip
 jest zawsze pod stałym adresem
 `https://github.com/zapqio/dotnet-module-nexo-connection/releases/latest/download/Nexo.Connection.zip`.
+
+Core jest przywracany w CI z nuget.org. Przed utworzeniem wydania workflow sprawdza paczki
+i nadpisywanie ustawień SDK przez konsumenta (`tests/Test-NuGetPackage.ps1`).
+
+Publikacja Connection na nuget.org jest obecnie ręczna: po udanym release pobierz z niego
+`Zapqio.Nexo.Connection.<wersja>.nupkg` i prześlij ten plik przez stronę Upload w NuGet.
+ZIP z tego samego release jest przeznaczony do instalacji na runnerze. Korzystaj z obu plików
+z jednego builda, ponieważ instalator narzędzi sprawdza zgodność DLL. Workflow nie wysyła
+automatycznie Connection na nuget.org.
 
 `Version` w csproj rośnie z każdą zmianą tego modułu. `AssemblyVersion` zostaje `1.0.0.0`, dopóki
 zmiana nie łamie API: moduł skompilowany przeciw 1.0.0 działa z każdym zipem 1.x. Zmiana łamiąca to
@@ -274,7 +297,7 @@ $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/
 
 Skrypt pobiera NuGet Connection w wersji zainstalowanego ZIP-a (sprawdza zgodność DLL), wykorzystuje
 DLL-e z `Modules\Nexo.Sdk.zip` do kompilacji i w razie potrzeby instaluje systemowe SDK .NET 8 x64.
-Ponieważ `Zapqio.Runner.Module.Core` nie jest publikowany na nuget.org, skrypt buduje paczkę 1.2.0
+Obecny instalator narzędzi nadal buduje lokalną paczkę Core 1.2.0
 z przypiętego commita runnera `057df4873e1641c772f57cb124b8d06a4656f219`, wyłącznie dla .NET 8,
 i dodaje ją do tego samego lokalnego źródła NuGet. Nie wymaga Git ani kopiowania plików z komputera autora.
 Pakiety i referencje zapisuje w `Build\`, a ustawienia NuGet i MSBuild w `Deployments\`. Istniejące

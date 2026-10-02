@@ -1,0 +1,37 @@
+<Project>
+  <PropertyGroup>
+    <nexoSdkBinPath Condition="'$(nexoSdkBinPath)' == ''">C:\nexoSDK_$(NexoSdkVersion)\Bin\</nexoSdkBinPath>
+    <!-- Use a separate normalized property: command-line properties cannot be overwritten. -->
+    <_ZapqioNexoSdkBinPath>$([MSBuild]::EnsureTrailingSlash('$(nexoSdkBinPath)'))</_ZapqioNexoSdkBinPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <_ZapqioNexoSdkAssembly Include="InsERT.Moria.API" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Moria.DaneDomyslne" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Moria.ModelDanych" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Moria.Sfera" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Mox.Core" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Mox.DataExtensions" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Mox.EntityFramework.Core" />
+    <_ZapqioNexoSdkAssembly Include="InsERT.Mox.EntityFrameworkSupport" />
+    <Reference Include="@(_ZapqioNexoSdkAssembly)">
+      <HintPath>$(_ZapqioNexoSdkBinPath)%(Identity).dll</HintPath>
+      <Private>$(NexoSdkCopyLocal)</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- The runner normally provides these files in the separate Nexo.Sdk.zip. -->
+  <ItemGroup Condition="'$(NexoSdkCopyLocal)' == 'true'">
+    <None Include="$(_ZapqioNexoSdkBinPath)Xml.pak" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(_ZapqioNexoSdkBinPath)ijwhost.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(_ZapqioNexoSdkBinPath)Microsoft.Data.SqlClient.SNI.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(_ZapqioNexoSdkBinPath)Mrt.pak" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="ZapqioValidateNexoSdk" BeforeTargets="ResolveAssemblyReferences"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!Exists('$(_ZapqioNexoSdkBinPath)%(_ZapqioNexoSdkAssembly.Identity).dll')"
+           Code="ZNEXO001"
+           Text="InsERT nexo SDK file not found: $(_ZapqioNexoSdkBinPath)%(_ZapqioNexoSdkAssembly.Identity).dll. Download the SDK from InsERT and install it in C:\nexoSDK_$(NexoSdkVersion)\Bin, or set nexoSdkBinPath to your SDK Bin directory. For builds on a Zapqio runner, run install-nexo.ps1 -BuildTools. The NuGet package does not include the InsERT SDK." />
+  </Target>
+</Project>

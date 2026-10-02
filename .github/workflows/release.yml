@@ -55,36 +55,17 @@ jobs:
             echo "Release v$version, SDK $sdk (plik nexoSDK_${sdk_short//./_}.exe)."
           fi
 
-      # 8 dla Nexo.Connection (net8.0-windows), 10 dla paczki Module.Core z repo runnera (net8.0;net10.0)
       - uses: actions/setup-dotnet@v4
         if: steps.ver.outputs.exists == 'false'
         with:
-          dotnet-version: |
-            8.0.x
-            10.0.x
+          dotnet-version: 8.0.x
 
-      # Zapqio.Runner.Module.Core nie jest (jeszcze) na nuget.org, więc paczkę budujemy z publicznego repo
-      # runnera i podpinamy katalog z nupkg jako źródło NuGet. Klon poza workspace: csproj w stylu SDK bierze
-      # **/*.cs z katalogu projektu, więc runner w podkatalogu wszedłby do kompilacji Nexo.Connection.
-      # Wersja w csproj runnera musi być >= tej z PackageReference (NuGet bierze najniższą spełniającą).
-      - name: Zapqio.Runner.Module.Core z repo runnera
+      - name: Restore publicznych zależności
         if: steps.ver.outputs.exists == 'false'
         shell: pwsh
-        run: |
-          $runner = Join-Path $env:RUNNER_TEMP 'dotnet-runner'
-          git clone --quiet --depth 1 https://github.com/zapqio/dotnet-runner.git $runner
-          # dotnet pack pada z NU5026 przy multi-target + GeneratePackageOnBuild; build generuje paczkę tak samo
-          dotnet build (Join-Path $runner 'Zapqio.Runner.Module.Core') -c Release --nologo -v quiet
-          if ($LASTEXITCODE -ne 0) { throw "Build Module.Core zakończył się kodem $LASTEXITCODE" }
-          $pkg = Get-ChildItem (Join-Path $runner 'Zapqio.Runner.Module.Core\bin\Release') -Filter 'Zapqio.Runner.Module.Core.*.nupkg' | Select-Object -First 1
-          if (-not $pkg) { throw 'Brak nupkg Zapqio.Runner.Module.Core po buildzie' }
-          $source = Join-Path $env:RUNNER_TEMP 'nuget-local'
-          New-Item -ItemType Directory -Path $source | Out-Null
-          Copy-Item $pkg.FullName $source
-          dotnet nuget add source $source -n 'Runner module core'
-          Write-Host "Źródło NuGet: $source ($($pkg.Name))"
+        run: dotnet restore Nexo.Connection.csproj --source https://api.nuget.org/v3/index.json
 
-      # Referencje w props wskazują C:\nexoSDK_<wersja>\Bin; na runnerze GitHuba SDK nie ma,
+      # Referencje paczki wskazują C:\nexoSDK_<wersja>\Bin; na runnerze GitHuba SDK nie ma,
       # więc pobieramy je z FTP InsERT tak jak update-nexo-sdk.ps1. Same DLL-ki z Bin (tyle potrzebuje
       # kompilacja) idą do cache pod kluczem z wersją z props: kolejne wydania tej samej wersji omijają
       # FTP. GitHub kasuje wpisy cache nieużywane przez 7 dni, więc przy rzadkich wydaniach i tak pobierze.
@@ -147,27 +128,16 @@ jobs:
       - name: Publish
         if: steps.ver.outputs.exists == 'false'
         shell: pwsh
-        run: dotnet publish Nexo.Connection.csproj -c Release "-p:nexoSdkBinPath=${{ steps.sdk.outputs.bin }}"
+        run: dotnet publish Nexo.Connection.csproj --no-restore -c Release "-p:nexoSdkBinPath=${{ steps.sdk.outputs.bin }}"
 
-      - name: Sprawdź paczki
+      - name: Sprawdź paczki i konfigurację SDK konsumenta
         if: steps.ver.outputs.exists == 'false'
         shell: pwsh
-        run: |
-          $zip = 'bin/Release/Nexo.Connection.zip'
-          $nupkg = 'bin/Release/Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg'
-          foreach ($f in $zip, $nupkg) { if (-not (Test-Path $f)) { throw "Brak $f" } }
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
-          try { $entries = @($archive.Entries | ForEach-Object { $_.FullName }) } finally { $archive.Dispose() }
-          foreach ($name in 'Nexo.Connection.dll', '##Dll', '##Shared', 'update-nexo-sdk.ps1') {
-            if ($entries -notcontains $name) { throw "W $zip brakuje $name" }
-          }
-          $sdkFiles = @($entries | Where-Object { $_ -like 'InsERT.*' })
-          if ($sdkFiles.Count -gt 0) {
-            throw "W $zip jest SDK ($($sdkFiles -join ', ')) - SDK ma jechać w Nexo.Sdk.zip, sprawdź NexoSdkCopyLocal w csproj"
-          }
-          Write-Host "Nexo.Connection.zip: $($entries -join ', ')"
-          Write-Host "NuGet: $nupkg"
+        run: >
+          ./tests/Test-NuGetPackage.ps1
+          -PackagePath "bin/Release/Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg"
+          -RuntimeZipPath "bin/Release/Nexo.Connection.zip"
+          -SdkBinPath "${{ steps.sdk.outputs.bin }}"
 
       - name: Utwórz release
         if: steps.ver.outputs.exists == 'false'

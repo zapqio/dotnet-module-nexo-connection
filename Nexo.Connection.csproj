@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+	<Import Project="build\Zapqio.Nexo.Connection.props" />
+
 	<PropertyGroup>
 		<TargetFramework>net8.0-windows</TargetFramework>
 		<UseWPF>true</UseWPF>
@@ -10,9 +12,9 @@
 		<DeterministicSourcePaths>true</DeterministicSourcePaths>
 
 		<!-- Paczka NuGet: API do kompilacji dla modułów konsumenckich (PackageReference z ExcludeAssets="runtime").
-		     W runtime DLL i SDK biorą się z zipa Nexo.Connection w Modules\ runnera. -->
+		     W runtime Connection jest w Nexo.Connection.zip, a SDK w osobnym Nexo.Sdk.zip w Modules\ runnera. -->
 		<PackageId>Zapqio.Nexo.Connection</PackageId>
-		<Version>1.1.2</Version>
+		<Version>1.1.3</Version>
 		<!-- Tożsamość zestawu stała, jak w Module.Core: konsument skompilowany przeciw 1.0.0 wiąże się
 		     z każdym 1.x. Podbić dopiero przy zmianie łamiącej API (wtedy 2.0.0.0 i przebudowa konsumentów). -->
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
@@ -24,7 +26,7 @@
 		<RepositoryType>git</RepositoryType>
 		<PackageReadmeFile>NUGET.md</PackageReadmeFile>
 		<PackageTags>zapqio;nexo;subiekt;integration</PackageTags>
-		<PackageReleaseNotes>Apache-2.0 license, NuGet documentation and dependency on Module.Core 1.2.0. No public API changes.</PackageReleaseNotes>
+		<PackageReleaseNotes>Fix SDK version and path overrides in consumer projects; validate missing SDK files. Apache-2.0, Module.Core 1.2.0. No public API changes.</PackageReleaseNotes>
 		<Description>Shared InsERT nexo (Subiekt) connection for Zapqio Runner modules: one NexoClient singleton injected into consumer modules, plus the nexo SDK references for compiling them.</Description>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -32,22 +34,23 @@
 
 		<!-- SDK nie jedzie w tym zipie: na runnerze leży w osobnej paczce współdzielonej Nexo.Sdk.zip
 		     (pakuje ją update-nexo-sdk.ps1), więc zmiana wersji Subiekta nie wymaga przebudowy niczego.
-		     Referencje SDK (props paczki) służą tu i u konsumentów tylko do kompilacji. Domyślna wersja
+		     Referencje SDK (targets paczki) służą tu i u konsumentów tylko do kompilacji. Domyślna wersja
 		     w props to wersja do kompilacji, niezależna od tego, co klient ma w Nexo.Sdk.zip. -->
 		<NexoSdkCopyLocal>false</NexoSdkCopyLocal>
 	</PropertyGroup>
 
-	<!-- Ten sam plik jedzie w paczce (build\): jedna lista referencji SDK dla tego projektu i dla konsumentów. -->
-	<Import Project="build\Zapqio.Nexo.Connection.props" />
-
+	<!-- Te same ustawienia i referencje SDK są pakowane dla projektów konsumenckich. -->
 	<ItemGroup>
 		<None Include="build\Zapqio.Nexo.Connection.props" Pack="true" PackagePath="build\" />
+		<None Include="build\Zapqio.Nexo.Connection.targets" Pack="true" PackagePath="build\" />
 		<None Include="LICENSE" Pack="true" PackagePath="/" CopyToOutputDirectory="PreserveNewest" />
 		<None Include="NUGET.md" Pack="true" PackagePath="/" />
 		<!-- Skrypt podmiany SDK jedzie w zipie; NexoClient kopiuje go do katalogu runnera (automatyczna podmiana). -->
 		<None Include="update-nexo-sdk.ps1" CopyToOutputDirectory="PreserveNewest" />
 		<PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
 	</ItemGroup>
+
+	<Import Project="build\Zapqio.Nexo.Connection.targets" />
 
 	<!--Zip after publish-->
 	<Target Name="ZipAfterPublish" AfterTargets="Publish">
