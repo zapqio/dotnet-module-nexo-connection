@@ -12,12 +12,19 @@
 		<!-- Paczka NuGet: API do kompilacji dla modułów konsumenckich (PackageReference z ExcludeAssets="runtime").
 		     W runtime DLL i SDK biorą się z zipa Nexo.Connection w Modules\ runnera. -->
 		<PackageId>Zapqio.Nexo.Connection</PackageId>
-		<Version>1.1.1</Version>
+		<Version>1.1.2</Version>
 		<!-- Tożsamość zestawu stała, jak w Module.Core: konsument skompilowany przeciw 1.0.0 wiąże się
 		     z każdym 1.x. Podbić dopiero przy zmianie łamiącej API (wtedy 2.0.0.0 i przebudowa konsumentów). -->
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
 		<Authors>Zapqio</Authors>
 		<Company>Hdwr global</Company>
+		<PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+		<PackageProjectUrl>https://github.com/zapqio/dotnet-module-nexo-connection</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/zapqio/dotnet-module-nexo-connection</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+		<PackageReadmeFile>NUGET.md</PackageReadmeFile>
+		<PackageTags>zapqio;nexo;subiekt;integration</PackageTags>
+		<PackageReleaseNotes>Apache-2.0 license, NuGet documentation and dependency on Module.Core 1.2.0. No public API changes.</PackageReleaseNotes>
 		<Description>Shared InsERT nexo (Subiekt) connection for Zapqio Runner modules: one NexoClient singleton injected into consumer modules, plus the nexo SDK references for compiling them.</Description>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -35,9 +42,11 @@
 
 	<ItemGroup>
 		<None Include="build\Zapqio.Nexo.Connection.props" Pack="true" PackagePath="build\" />
+		<None Include="LICENSE" Pack="true" PackagePath="/" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="NUGET.md" Pack="true" PackagePath="/" />
 		<!-- Skrypt podmiany SDK jedzie w zipie; NexoClient kopiuje go do katalogu runnera (automatyczna podmiana). -->
 		<None Include="update-nexo-sdk.ps1" CopyToOutputDirectory="PreserveNewest" />
-		<PackageReference Include="Zapqio.Runner.Module.Core" Version="1.0.0" ExcludeAssets="runtime" />
+		<PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
 	</ItemGroup>
 
 	<!--Zip after publish-->

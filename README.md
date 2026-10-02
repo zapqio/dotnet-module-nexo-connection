@@ -274,6 +274,9 @@ $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/
 
 Skrypt pobiera NuGet Connection w wersji zainstalowanego ZIP-a (sprawdza zgodność DLL), wykorzystuje
 DLL-e z `Modules\Nexo.Sdk.zip` do kompilacji i w razie potrzeby instaluje systemowe SDK .NET 8 x64.
+Ponieważ `Zapqio.Runner.Module.Core` nie jest publikowany na nuget.org, skrypt buduje paczkę 1.2.0
+z przypiętego commita runnera `057df4873e1641c772f57cb124b8d06a4656f219`, wyłącznie dla .NET 8,
+i dodaje ją do tego samego lokalnego źródła NuGet. Nie wymaga Git ani kopiowania plików z komputera autora.
 Pakiety i referencje zapisuje w `Build\`, a ustawienia NuGet i MSBuild w `Deployments\`. Istniejące
 ustawienia zachowuje; dodaje własne wpisy. Nadaje dostęp kontu usługi, sprawdza kompilację małego
 modułu i restartuje runnera. Próba kompilacji działa na koncie instalatora; pierwsze wdrożenie z Weba
