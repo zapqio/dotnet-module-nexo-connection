@@ -1,7 +1,8 @@
 # Zapqio.Nexo.Connection
 
-Shared InsERT nexo connection for [Zapqio Runner](https://github.com/zapqio/dotnet-runner)
-modules. Provides `Nexo.NexoClient`, connection settings and SDK build references.
+Shared InsERT nexo (Subiekt) connection for [Zapqio Runner](https://github.com/zapqio/dotnet-runner)
+modules: one `Nexo.NexoClient` per runner process, injected into your methods, plus build references
+to the InsERT nexo SDK.
 
 ## Reference from a module
 
@@ -10,7 +11,6 @@ modules. Provides `Nexo.NexoClient`, connection settings and SDK build reference
   <TargetFramework>net8.0-windows</TargetFramework>
   <UseWPF>true</UseWPF>
   <PlatformTarget>x64</PlatformTarget>
-  <nexoSdkBinPath>C:\nexoSDK_61.1.0.9431\Bin\</nexoSdkBinPath>
 </PropertyGroup>
 <ItemGroup>
   <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
@@ -18,27 +18,48 @@ modules. Provides `Nexo.NexoClient`, connection settings and SDK build reference
 </ItemGroup>
 ```
 
-The SDK must be available separately on the machine that compiles the module.
-With no overrides, the package uses `C:\nexoSDK_61.1.0.9431\Bin\`. Set
-`NexoSdkVersion` in your project to use `C:\nexoSDK_<version>\Bin\`, or set
-`nexoSdkBinPath` to an existing SDK `Bin` directory anywhere on disk. An explicit
-path takes precedence over the version-derived path; the trailing slash is optional.
-Both settings can also be supplied in `Directory.Build.props` or through `-p:`.
+Target .NET 8 and x64: InsERT libraries do not load on .NET 9+. Your module ZIP should contain only
+your own DLL. On the runner, Core comes with the runner, `NexoClient` from `Nexo.Connection.zip`
+and the SDK from `Nexo.Sdk.zip`. Use the NuGet package and `Nexo.Connection.zip` from the same release.
 
-A build without the required SDK files fails with `ZNEXO001` and the missing path.
-Restore does not download the InsERT SDK. For source builds on a runner, prepare
-the SDK with `install-nexo.ps1 -BuildTools`; CI prepares its SDK before publish.
+```csharp
+using System;
+using System.Threading.Tasks;
+using InsERT.Moria.Uzytkownicy;
+using Nexo;
+using Zapqio.Runner.Core;
 
-This NuGet package
-contains our connection library and build references; it does not contain InsERT DLLs.
+public class MyMethod(NexoClient client) : IRunnerMethod
+{
+    public string NameMethod() => "My method";
+    public Type InData() => null;
+    public Type OutData() => null;
 
-At runtime, the runner needs `Nexo.Connection.zip`, `Nexo.Sdk.zip` for the client's
-nexo version, and connection settings. Keep the Connection package and runtime ZIP
-on the same release. `ExcludeAssets="runtime"` lets consumer modules use the shared
-runtime installation instead of shipping their own copy.
+    public Task<string> Run(string data) =>
+        Task.FromResult(client.Uchwyt.PodajObiektTypu<IZalogowanyUzytkownik>().Dane.Sygnatura);
+}
+```
 
-See the [installation instructions](https://github.com/zapqio/dotnet-module-nexo-connection)
-for SDK setup and runner configuration.
+The connection opens on first `Uchwyt` access and is shared by all methods and concurrent jobs.
+Missing settings and connection failures throw `NexoConnectionException`.
+
+## InsERT nexo SDK
+
+This package does not contain InsERT DLLs; the SDK must be present on the machine that compiles
+the module. The package references `InsERT.Moria.API`, `InsERT.Moria.DaneDomyslne`,
+`InsERT.Moria.ModelDanych`, `InsERT.Moria.Sfera`, `InsERT.Mox.Core`, `InsERT.Mox.DataExtensions`,
+`InsERT.Mox.EntityFramework.Core` and `InsERT.Mox.EntityFrameworkSupport` (not copied to output) from:
+
+- `C:\nexoSDK_61.1.0.9431\Bin\` by default,
+- `C:\nexoSDK_<version>\Bin\` when `NexoSdkVersion` is set,
+- any directory set in `nexoSdkBinPath` (takes precedence; trailing slash optional).
+
+Set them in the project, in `Directory.Build.props` or with `-p:`. A missing SDK file fails the build
+with `ZNEXO001`; restore does not download the SDK. `NexoSdkCopyLocal=true` copies the SDK libraries
+to the output; keep the default `false` for runner packages. On a Zapqio runner,
+`install-nexo.ps1 -BuildTools` prepares the SDK for builds.
+
+Runner installation and configuration: [repository README](https://github.com/zapqio/dotnet-module-nexo-connection).
 
 ## License
 

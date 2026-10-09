@@ -8,7 +8,7 @@ namespace Nexo
 {
     /// <summary>
     /// Sprawdzenie instalacji: loguje się do Subiekta przez współdzielony <see cref="NexoClient"/> i zwraca
-    /// operatora Sfery oraz to, z czym runner pracuje (wersja i paczka SDK, serwer i baza z konfiguracji).
+    /// operatora Sfery oraz to, z czym runner pracuje (wersja i paczka SDK).
     /// Jedyna metoda tej paczki. Moduły z metodami biznesowymi biorą <see cref="NexoClient"/> tak samo,
     /// przez konstruktor.
     /// </summary>
