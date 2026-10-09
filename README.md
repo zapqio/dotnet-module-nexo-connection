@@ -1,38 +1,40 @@
-# Zapqio Runner - moduł Nexo.Connection
+﻿# Zapqio Runner - moduł Nexo.Connection
 
-Moduł współdzielony dla [Zapqio Runner](https://github.com/zapqio/dotnet-runner): jedno połączenie
-z InsERT nexo (Subiekt) przez Sferę, wspólne dla wszystkich modułów Nexo na runnerze. Dostarcza:
+Moduł współdzielony dla [Zapqio Runner](https://github.com/zapqio/runner-dotnet): jedno połączenie
+do InsERT nexo (Subiekt) przez Sferę, wspólne dla wszystkich modułów Nexo na tym samym runnerze.
+Ma jedną metodę, **„Nexo: Who am I”** - sprawdzenie instalacji (operator Sfery, wersja
+i paczka SDK). Poza tym dostarcza:
 
 - `Nexo.NexoClient` - singleton z uchwytem Sfery (`Uchwyt`), wstrzykiwany do metod innych modułów,
-- `Nexo.ConnectionSettings` - dane połączenia z `Config\nexoModule.json`,
-- metodę **„Nexo: Who am I”** - test instalacji (operator Sfery, wersja i paczka SDK),
-- paczkę NuGet `Zapqio.Nexo.Connection` do kompilacji własnych modułów.
+- `Nexo.ConnectionSettings` - dane połączenia z pliku `nexoModule.json`,
+- paczkę NuGet z API i referencjami do SDK, przeciw której kompilują się moduły konsumenckie.
 
-Na runnerze w `Modules\` leżą trzy rodzaje paczek:
+Sam SDK InsERT nexo leży na runnerze w osobnej paczce `Nexo.Sdk.zip`, którą tworzy skrypt
+`update-nexo-sdk.ps1`. Dzięki temu zmiana wersji Subiekta nie wymaga przebudowy żadnego modułu.
 
-| Paczka | Zawartość | Skąd |
-|---|---|---|
-| `Nexo.Sdk.zip` | SDK InsERT nexo w wersji Subiekta | `update-nexo-sdk.ps1` |
-| `Nexo.Connection.zip` | `NexoClient`, „Nexo: Who am I” | [Releases](https://github.com/zapqio/dotnet-module-nexo-connection/releases) |
-| `Nexo.Invoices.zip`, ... | metody | repozytoria modułów |
+## Instalacja na runnerze
 
-SDK jest osobno, więc aktualizacja Subiekta nie wymaga przebudowy modułów.
-
-## Instalacja
-
-Wymagany jest Zapqio Runner na .NET 8 (biblioteki InsERT nie działają na .NET 9+). W PowerShellu
-**jako administrator**:
+Wymagany jest zainstalowany [Zapqio Runner](https://github.com/zapqio/dotnet-runner) w wariancie .NET 8
+(domyślny w jego `install.ps1`; biblioteki InsERT-a nie ładują się na .NET 9+). Resztę robi `install-nexo.ps1`
+z tego repo, w PowerShellu **jako administrator** na maszynie z runnerem:
 
 ```powershell
 $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo.ps1
 & ([scriptblock]::Create($s.TrimStart([char]0xFEFF)))
 ```
 
-Skrypt pyta o dane połączenia, odczytuje wersję Subiekta z bazy, zapisuje `Config\nexoModule.json`,
-pobiera `Nexo.Connection.zip`, buduje `Nexo.Sdk.zip` (ok. 500 MB z FTP InsERT) i restartuje usługę.
-Ponowne uruchomienie aktualizuje moduł; zapisane dane połączenia zostają.
+Skrypt pyta o dane połączenia z Subiektem (serwer SQL, użytkownik SQL albo uwierzytelnianie Windows, baza
+podmiotu - podpowiada listę baz z serwera - operator i jego hasło), sprawdza połączenie z SQL, odczytuje
+z bazy wersję Subiekta (rejestr launchera InsERT: `InsLauncher.InstalledProducts`) i dalej sam:
 
-Bez pytań - wszystko z parametrów:
+1. zapisuje sekcję `Connect` w `Config\nexoModule.json` (inne klucze pliku zostają),
+2. pobiera `Nexo.Connection.zip` z [Releases](https://github.com/zapqio/dotnet-module-nexo-connection/releases)
+   do `Modules\` i kopiuje `update-nexo-sdk.ps1` do katalogu runnera,
+3. pakuje SDK InsERT nexo w wersji Subiekta do `Modules\Nexo.Sdk.zip` (`update-nexo-sdk.ps1` pobiera
+   ok. 500 MB z publicznego FTP InsERT),
+4. restartuje usługę i czeka, aż w logu pojawi się `Add method: Nexo.WhoAmI`.
+
+Bez pytań, wszystko z parametrów:
 
 ```powershell
 & ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -DatabaseServer 'SERWER\INSERTNEXO' -DatabaseName Nexo_Firma `
@@ -41,73 +43,132 @@ Bez pytań - wszystko z parametrów:
 
 | Parametr | Opis |
 |---|---|
-| `-DatabaseServer`, `-DatabaseName` | Serwer SQL z instancją i baza podmiotu. |
-| `-DatabaseUser`, `-DatabasePassword` / `-WindowsLogin` | Logowanie SQL albo Windows (kontem usługi runnera). |
-| `-UserName`, `-UserPassword` | Operator Subiekta dla Sfery. |
-| `-SubiektVersion` | Wersja z „Pomoc > O programie”, gdy odczyt z bazy się nie uda. |
-| `-SdkDir`, `-PackagePath` | Lokalny katalog `Bin` SDK i lokalny zip modułu (instalacja offline). |
-| `-Version` | Konkretny release modułu (domyślnie najnowszy). |
-| `-BuildTools` | Dodatkowo przygotowuje runner do budowania modułów ze źródeł (patrz niżej). |
-| `-InstallDir`, `-ServiceName`, `-NoRestart` | Domyślnie `C:\zapqio\runner`, `ZapqioRunner`. |
+| `-DatabaseServer`, `-DatabaseName` | Serwer SQL z instancją (np. `SERWER\INSERTNEXO`) i baza podmiotu. |
+| `-DatabaseUser`, `-DatabasePassword` albo `-WindowsLogin` | Użytkownik SQL albo uwierzytelnianie Windows **kontem usługi runnera** (zwykle wymaga przełączenia usługi na konto domenowe z prawami do bazy). |
+| `-UserName`, `-UserPassword` | Operator Subiekta, na którego loguje się Sfera; hasło może być puste. |
+| `-SubiektVersion` | Wersja z "Pomoc > O programie" (np. `61.1.1`), gdy odczyt z bazy się nie uda. |
+| `-SdkDir`, `-PackagePath` | Gotowy katalog `Bin` SDK i lokalny `Nexo.Connection.zip` - razem dają instalację bez internetu. |
+| `-Version` | Konkretny release modułu; domyślnie najnowszy. |
+| `-InstallDir`, `-ServiceName`, `-NoRestart` | Jak w `install.ps1` runnera: domyślnie `C:\zapqio\runner` i `ZapqioRunner`; `-NoRestart` bez restartu na końcu. |
 
-**Sprawdzenie:** uruchom w panelu Web **„Nexo: Who am I”**. Komunikat błędu wskaże przyczynę: brak paczki,
-niezgodna wersja SDK, dane SQL albo hasło operatora. Paczki z metodami wrzucasz do `Modules\`
-i restartujesz usługę.
+Ponowne uruchomienie działa jak aktualizacja: dane połączenia zostają (pyta tylko o brakujące), zip modułu
+jest podmieniany na najnowszy, SDK podmieniane tylko przy zmianie wersji Subiekta. Stary `Nexo.zip` sprzed
+podziału na SDK + Connection jest przemianowywany na `Nexo.zip.old`.
 
-### Konfiguracja
+Sprawdzenie: w panelu Web uruchom **"Nexo: Who am I"** - zwraca sygnaturę operatora oraz wersję i paczkę SDK.
+Błąd tego zadania to zawsze jedno z czterech: brak paczki w `Modules\`, SDK w innej wersji niż Subiekt, dane
+połączenia SQL albo hasło operatora - komunikat mówi, które.
+Paczki z metodami (np. `Nexo.Invoices.zip`) wrzucasz do `Modules\` i restartujesz usługę.
 
-`Config\nexoModule.json` (powstaje przy pierwszym starcie; inne moduły Nexo dopisują tu własne klucze):
+### Ręcznie, bez instalatora
+
+W `Modules\` runnera mają leżeć trzy rodzaje paczek:
+
+| Paczka | Skąd | Zawartość |
+|---|---|---|
+| `Nexo.Sdk.zip` | `update-nexo-sdk.ps1` na runnerze | SDK InsERT nexo w wersji Subiekta klienta |
+| `Nexo.Connection.zip` | [Releases](https://github.com/zapqio/dotnet-module-nexo-connection/releases) albo `dotnet publish` z tego repo | `Nexo.Connection.dll` (NexoClient, metoda "Nexo: Who am I") |
+| `Nexo.Invoices.zip`, ... | repo modułów | metody |
+
+Kolejność:
+
+1. Weź `update-nexo-sdk.ps1` z tego repo (albo z `Nexo.Connection.zip`, jest w środku), skopiuj do
+   katalogu runnera i uruchom jako administrator z wersją Subiekta z "Pomoc > O programie":
+
+   ```powershell
+   .\update-nexo-sdk.ps1 -Version 61.1.1 -NoRestart
+   ```
+
+   Skrypt pobiera `nexoSDK_61_1_1.exe` z publicznego FTP InsERT, rozpakowuje, pakuje do
+   `Modules\Nexo.Sdk.zip`. Masz już rozpakowane SDK: `-SdkDir C:\nexoSDK_61.1.1.9471\Bin`.
+2. `Nexo.Connection.zip` i paczki z metodami do `Modules\`.
+3. Restart usługi. W logu: `Moduł współdzielony: Nexo.Sdk`, `Moduł współdzielony: Nexo.Connection`,
+   `Add injection: Nexo.NexoClient`, `Add method: Nexo.WhoAmI`, potem metody pozostałych modułów.
+4. Przy pierwszym starcie w katalogu runnera powstaje `Config\nexoModule.json` z pustą sekcją `Connect`
+   (serwer SQL, baza, użytkownik SQL, operator Subiekta). Do czasu uzupełnienia każde zadanie Nexo kończy
+   się błędem `Brak konfiguracji połączenia z Nexo: uzupełnij ... sekcję Connect (...)`. Uzupełnij
+   i zrestartuj usługę.
 
 ```json
 {
   "Connect": {
     "DatabaseServer": "192.168.1.10\\INSERTNEXO",
-    "DatabaseName": "Nexo_Firma",
     "DatabaseUser": "sa",
     "DatabasePassword": "...",
-    "WindowsLogin": false,
+    "DatabaseName": "Nexo_Firma",
     "UserName": "Szef",
-    "UserPassword": "..."
+    "UserPassword": "...",
+    "WindowsLogin": false
   },
-  "SdkUpdate": {
-    "Enabled": true,
-    "Restart": true,
-    "ModulesUrl": null,
-    "ServiceName": "ZapqioRunner",
-    "RunnerDir": ""
-  }
+  "SdkUpdate": { ... }
 }
 ```
 
-Po zmianie zrestartuj usługę. Połączenie powstaje przy pierwszym użyciu `Uchwyt`.
+Katalog `Config\` ma uprawnienia jak `appsettings.json` runnera (nadaje je `install.ps1`, a na starszej
+instalacji `install-nexo.ps1`), bo w pliku są hasła. Instalacje sprzed tego katalogu, z `nexoModule.json`
+obok binarki, są przenoszone automatycznie. Inne moduły Nexo dopisują do tego samego pliku własne klucze
+przy pierwszym starcie.
 
-### Instalacja ręczna
+Połączenie jest nawiązywane leniwie, gdy pierwsza metoda sięgnie po `Uchwyt`. W logu zadania widać
+wtedy `Connecting Nexo (SDK 61.1.1.9471 z paczki Nexo.Sdk)`.
 
-1. Jako administrator w katalogu runnera: `.\update-nexo-sdk.ps1 -Version 61.1.1 -NoRestart`
-   (albo `-SdkDir C:\nexoSDK_61.1.1.9471\Bin` dla rozpakowanego SDK). Skrypt jest też w `Nexo.Connection.zip`.
-2. `Nexo.Connection.zip` i paczki z metodami do `Modules\`.
-3. Restart usługi, uzupełnienie `Config\nexoModule.json`, ponowny restart.
-
-Na runnerze ma być dokładnie jedna paczka SDK i jedna z `NexoClient` - stary `Nexo.zip` trzeba usunąć
-(instalator robi to sam).
+Na runnerze ma być dokładnie jedna paczka z SDK i dokładnie jedna z `NexoClient`. Stary `Nexo.zip`
+sprzed podziału niesie jedno i drugie, więc trzeba go usunąć.
 
 ## Aktualizacja Subiekta
 
-Sfera wymaga SDK w tej samej wersji co Subiekt. Po aktualizacji Subiekta pierwsze zadanie Nexo kończy się
-błędem, a `NexoClient` uruchamia w tle `update-nexo-sdk.ps1`, który podmienia `Nexo.Sdk.zip` i restartuje
-usługę. Po kilku minutach zadania działają; przerwane trzeba ponowić. Log: `Logs\nexo-sdk-update.log`.
+Sfera wymaga SDK w tej samej wersji co Subiekt. Po aktualizacji Subiekta pierwsze zadanie Nexo kończy
+się błędem `SDK <stara wersja> (paczka Nexo.Sdk) nie połączył się z Subiektem: ... Wersja bazy danych
+to X ...`, a `NexoClient` w tej samej chwili uruchamia w tle `update-nexo-sdk.ps1 -Version X`: skrypt
+pobiera SDK z FTP InsERT, podmienia `Nexo.Sdk.zip`, dociąga komplet modułów (jeśli skonfigurowany)
+i restartuje usługę. Po kilku minutach kolejne zadania działają. W logu zadania widać
+`uruchomiono automatyczną podmianę SDK`, przebieg skryptu jest w `Logs\nexo-sdk-update.log`, a stan
+w `nexo-sdk-update.json` obok binarki. Zadania w toku w chwili restartu kończą się błędem i wymagają
+ponowienia z panelu.
 
-- `SdkUpdate.Enabled: false` - bez automatu, tylko komunikat z instrukcją.
-- `SdkUpdate.Restart: false` - podmiana bez restartu.
-- `SdkUpdate.ModulesUrl` - adres (z `{version}`) własnych kompletów modułów pod daną wersję SDK.
+Skrypt jedzie w `Nexo.Connection.zip`, a moduł kopiuje go do katalogu runnera, więc klient nie instaluje
+nic poza zipem. Restart wymaga, żeby konto usługi miało prawo start/stop na własnej usłudze; nadaje je
+`install.ps1` runnera od wersji 0.1.9. Na starszej instalacji skrypt kończy proces runnera, a usługa
+wstaje z opcji odzyskiwania po 5 sekundach.
 
-Ręcznie: `.\update-nexo-sdk.ps1 -Version <wersja z "O programie">`. Przebudowa modułu jest potrzebna
-tylko, gdy InsERT zmienił w SDK coś, z czego moduł korzysta.
+Sterowanie w `Config\nexoModule.json`, sekcja `SdkUpdate` (powstaje z wartościami domyślnymi):
 
-## Własny moduł
+```json
+"SdkUpdate": {
+  "Enabled": true,
+  "ModulesUrl": null,
+  "ServiceName": "ZapqioRunner",
+  "Restart": true,
+  "RunnerDir": ""
+}
+```
 
-Potrzebne: .NET SDK 8 i SDK InsERT nexo (domyślnie w `C:\nexoSDK_61.1.0.9431\Bin\`). Wzorzec:
-[dotnet-module-nexo-test](https://github.com/zapqio/dotnet-module-nexo-test).
+`Enabled: false` zostawia tylko komunikat z instrukcją ręcznego uruchomienia. `Restart: false` przy pracy
+z konsoli i w testach: skrypt podmienia zip, restart robisz sam. Nieudana próba dla danej wersji nie jest
+ponawiana przez godzinę, a trwająca podmiana nie jest dublowana przez kolejne padające zadania.
+
+Ręcznie, jako administrator w katalogu runnera, ten sam skrypt:
+
+```powershell
+.\update-nexo-sdk.ps1 -Version <wersja z "O programie"> [-ModulesUrl <adres kompletów>]
+```
+
+Moduły zostają, bo wiążą się z SDK po nazwie zestawu. Bez SDK w `Modules\` metody Nexo nie powstają
+wcale, runner loguje `Metoda ... nie została utworzona ... 'InsERT.Moria.Sfera'`, a pozostałe moduły
+działają. `ModulesUrl` to opcja dla wdrożeń z własnym serwerem kompletów modułów zbudowanych pod daną wersję
+SDK (adres z `{version}`, pod nim `manifest.json` z listą zipów); gdy kompletu dla nowej wersji nie ma, skrypt
+zostawia obecne moduły z ostrzeżeniem - działają dalej, a późniejsze uruchomienie dociągnie komplet.
+
+Programista jest potrzebny tylko wtedy, gdy InsERT zmienił w SDK składową, z której korzysta któryś
+moduł. Wychodzi to przy kompilacji modułu przeciw nowemu SDK (`-p:NexoSdkVersion=<wersja>`), a nie
+przy podmianie paczki.
+
+## Własny moduł na Nexo.Connection
+
+Wymagania: .NET SDK 8, SDK InsERT nexo w `C:\nexoSDK_<wersja>\Bin\` do kompilacji oraz paczki NuGet
+`Zapqio.Runner.Module.Core` i `Zapqio.Nexo.Connection` w źródle, które widzi `dotnet restore`.
+
+Csproj (wzorzec: [module-nexo-testconnect](https://github.com/zapqio/dotnet-module-nexo-test)):
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
@@ -119,7 +180,8 @@ Potrzebne: .NET SDK 8 i SDK InsERT nexo (domyślnie w `C:\nexoSDK_61.1.0.9431\Bi
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Tylko do kompilacji: w runtime dostarczają je runner i paczki współdzielone. -->
+    <!-- Obie paczki tylko do kompilacji: w runtime kontrakt dostarcza runner, NexoClient przychodzi
+         z zipa Nexo.Connection, SDK z zipa Nexo.Sdk. Do zipa tego modułu trafia tylko jego własna DLL. -->
     <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
     <PackageReference Include="Zapqio.Nexo.Connection" Version="1.1.3" ExcludeAssets="runtime" />
   </ItemGroup>
@@ -133,6 +195,19 @@ Potrzebne: .NET SDK 8 i SDK InsERT nexo (domyślnie w `C:\nexoSDK_61.1.0.9431\Bi
   </Target>
 </Project>
 ```
+
+Referencje do SDK przychodzą z paczki (plik `build/Zapqio.Nexo.Connection.targets`) z `Private="false"`,
+więc nie trzeba ich przepisywać. Inna ścieżka albo wersja SDK do kompilacji to jedna właściwość:
+
+```xml
+<PropertyGroup>
+  <NexoSdkVersion>61.1.0.9431</NexoSdkVersion>
+  <!-- albo cała ścieżka -->
+  <nexoSdkBinPath>D:\sdk\nexo\Bin\</nexoSdkBinPath>
+</PropertyGroup>
+```
+
+Metoda dostaje klienta przez konstruktor:
 
 ```csharp
 using InsERT.Moria.Uzytkownicy;
@@ -150,52 +225,115 @@ public class MyMethod : IRunnerMethod
 
     public Task<string> Run(string data)
     {
+        // Jedno połączenie na proces, współdzielone przez wszystkie metody i równoległe zadania.
         var user = _client.Uchwyt.PodajObiektTypu<IZalogowanyUzytkownik>().Dane;
         return Task.FromResult(user.Sygnatura);
     }
 }
 ```
 
-`dotnet publish -c Release` daje `bin\Release\<projekt>.zip` do `Modules\`.
+`dotnet publish -c Release` daje `bin\Release\<projekt>.zip` do wrzucenia do `Modules\`. Jak runner
+ładuje paczki współdzielone, opisuje dokumentacja runnera (`docs/szczegoly.md`, sekcja
+"Moduły współdzielone"). Bez `Nexo.Connection.zip` w `Modules\` metody tego modułu nie powstaną:
+runner zgłosi w logu `Metoda ... nie została utworzona`, a pozostałe moduły będą działać.
 
-**Ścieżka SDK** (w `.csproj`, `Directory.Build.props` lub `-p:`):
+## Wybór SDK podczas kompilacji
 
-- `NexoSdkVersion` → `C:\nexoSDK_<wersja>\Bin\`,
-- `nexoSdkBinPath` → dowolny katalog (ma pierwszeństwo).
+Biblioteki InsERT muszą być dostępne osobno na komputerze budującym moduł. Publiczny NuGet
+Connection dostarcza naszą bibliotekę i referencje do SDK, bez bibliotek InsERT.
 
-Brak SDK kończy build błędem `ZNEXO001`. Paczka NuGet nie zawiera bibliotek InsERT.
+- Bez ustawień używana jest ścieżka `C:\nexoSDK_61.1.0.9431\Bin\`.
+- `NexoSdkVersion` ustawione w projekcie wyznacza ścieżkę `C:\nexoSDK_<wersja>\Bin\`.
+- Jawne `nexoSdkBinPath` ma pierwszeństwo; może wskazywać inny katalog, także bez końcowego ukośnika.
+- Obie właściwości można ustawić w `.csproj`, `Directory.Build.props` lub przez `-p:`.
 
-## Wdrożenia z Weba
+Przy braku wymaganej biblioteki build kończy się błędem `ZNEXO001` z nazwą brakującego pliku
+i instrukcją przygotowania SDK. Sam restore NuGet nie pobiera SDK InsERT. Na runnerze SDK do
+budowania przygotowuje instalator z `-BuildTools`, a w CI krok pobierania SDK przed publish.
 
-Tryb wybiera się dla każdego repozytorium osobno:
+## Budowanie i wersje
 
-- **Budowanie na runnerze** - `install-nexo.ps1 -BuildTools`, a na już skonfigurowanym runnerze:
+`dotnet publish -c Release` w tym repo daje w `bin\Release\`:
 
-  ```powershell
-  $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1
-  & ([scriptblock]::Create($s.TrimStart([char]0xFEFF)))
-  ```
+- `Nexo.Connection.zip` - paczka dla runnera: `Nexo.Connection.dll`, `##Dll`, `##Shared`, bez SDK,
+- `Zapqio.Nexo.Connection.<wersja>.nupkg` - paczka NuGet dla modułów konsumenckich.
 
-  Instaluje .NET SDK 8 (jeśli brak), przygotowuje SDK nexo i NuGet w `Build\` i `Deployments\`
-  i sprawdza kompilację próbnego modułu. Uruchom ponownie po zmianie Connection lub SDK nexo.
-  `-ConnectionPackagePath` pozwala użyć lokalnie zbudowanego `.nupkg` (musi pasować do zainstalowanego zipa).
-- **Gotowa paczka z CI** - wystarczy zwykły `install-nexo.ps1`. Web pobiera artefakt `zapqio-module`
-  (z `module.zip`) z workflow repozytorium; wzorzec: `dotnet-module-nexo-test/.github/workflows/build.yml`.
+Push na `main` z podbitym `Version` uruchamia `.github/workflows/release.yml`: pobiera SDK InsERT z FTP (wersja
+z `build/Zapqio.Nexo.Connection.props`; DLL-ki SDK zostają w cache GitHuba dla kolejnych wydań tej samej wersji),
+buduje i publikuje release `v<Version>` z obiema paczkami. Push bez zmiany `Version` nic nie wydaje. Najnowszy zip
+jest zawsze pod stałym adresem
+`https://github.com/zapqio/dotnet-module-nexo-connection/releases/latest/download/Nexo.Connection.zip`.
 
-## Budowanie i wydania
+Core jest przywracany w CI z nuget.org. Przed utworzeniem wydania workflow sprawdza paczki
+i nadpisywanie ustawień SDK przez konsumenta (`tests/Test-NuGetPackage.ps1`).
 
-`dotnet publish -c Release` daje w `bin\Release\` `Nexo.Connection.zip` (dla runnera) oraz
-`Zapqio.Nexo.Connection.<wersja>.nupkg` (dla modułów).
+Publikacja Connection na nuget.org jest obecnie ręczna: po udanym release pobierz z niego
+`Zapqio.Nexo.Connection.<wersja>.nupkg` i prześlij ten plik przez stronę Upload w NuGet.
+ZIP z tego samego release jest przeznaczony do instalacji na runnerze. Korzystaj z obu plików
+z jednego builda, ponieważ instalator narzędzi sprawdza zgodność DLL. Workflow nie wysyła
+automatycznie Connection na nuget.org.
 
-Push na `main` ze zmienionym `Version` w csproj uruchamia `.github/workflows/release.yml`, który buduje,
-testuje (`tests/Test-NuGetPackage.ps1`) i publikuje release `v<Version>`. Plik `.nupkg` z release'u wgrywa
-się ręcznie na nuget.org - zip i nupkg muszą pochodzić z tego samego builda.
+`Version` w csproj rośnie z każdą zmianą tego modułu. `AssemblyVersion` zostaje `1.0.0.0`, dopóki
+zmiana nie łamie API: moduł skompilowany przeciw 1.0.0 działa z każdym zipem 1.x. Zmiana łamiąca to
+`2.0.0.0` i przebudowa wszystkich konsumentów.
 
-`AssemblyVersion` zostaje `1.0.0.0` do pierwszej zmiany łamiącej API (wtedy `2.0.0.0` i przebudowa
-konsumentów).
+Wersja Subiekta nie ma z tym nic wspólnego: SDK żyje w `Nexo.Sdk.zip` i podmienia go skrypt.
 
-Test instalatora `-BuildTools` (bez usługi i bazy):
+## Wdrożenia modułów z Weba: Runner i CI
+
+Tryb budowania wybiera się osobno dla każdego repozytorium w Webie. Na jednym runnerze można
+uruchamiać moduły z obu trybów. W obu przypadkach `install-nexo.ps1` instaluje Connection,
+SDK zgodne z bazą i konfigurację połączenia.
+
+### Budowanie na runnerze
+
+Na nowej instalacji uruchom `install-nexo.ps1 -BuildTools`. Na już skonfigurowanym runnerze
+wystarczy poniższy skrypt, w PowerShellu jako administrator; nie pyta ponownie o SQL:
+
+```powershell
+$s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1
+& ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -InstallDir 'C:\zapqio\runner' -ServiceName 'ZapqioRunner'
+```
+
+Skrypt pobiera z nuget.org paczkę Connection w dokładnie tej wersji, którą zawiera zainstalowany
+ZIP, i porównuje DLL obu plików. Core `1.2.0` jest przywracany z nuget.org. Skrypt wykorzystuje
+DLL-e z `Modules\Nexo.Sdk.zip` do kompilacji, a w razie potrzeby instaluje systemowe SDK .NET 8 x64.
+Nie klonuje repozytorium runnera ani nie buduje lokalnej paczki Core.
+
+SDK i cache NuGet trafiają do `Build\`. Skrypt zapisuje zarządzany `Deployments\NuGet.Config`
+oraz referencję SDK w `Deployments\Directory.Build.props`. Ustawia konto usługi: prawa zapisu,
+`PATH`, `DOTNET_CLI_HOME` i `NUGET_PACKAGES`. Sprawdza kompilację próbnego modułu i restartuje
+runnera, chyba że podano `-NoRestart`. Próba kompilacji działa na koncie instalatora; pierwsze
+wdrożenie z Weba sprawdza pełną ścieżkę na koncie usługi.
+
+Nowa instalacja wymaga Connection `1.1.3` lub nowszego wydania dostępnego na nuget.org wraz
+z odpowiadającym ZIP-em z GitHub Releases. Skrypt nie zastępuje brakującej wersji przez `latest`
+i nie ma automatycznego fallbacku do starszych wydań lub lokalnego Core.
+
+Uruchom setup ponownie po zmianie Connection lub SDK nexo. Repozytorium z własnym
+`Directory.Build.props` powinno importować plik nadrzędny albo ustawić `nexoSdkBinPath`.
+Prywatne źródła paczek można skonfigurować w `NuGet.Config` repozytorium, zachowując dostęp
+do nuget.org. Domyślnie instalator nie tworzy lokalnego źródła NuGet.
+
+`-ConnectionPackagePath` pozostaje jawną opcją dla lokalnie zbudowanego Connection. DLL musi
+odpowiadać zainstalowanemu ZIP-owi. Tylko ta paczka trafia wtedy do osobnego źródła i cache
+pod `Build\LocalConnection\<hash>`. Mapowanie źródeł przypisuje Connection do tego katalogu,
+a pozostałe paczki, w tym Core, do nuget.org. Nie jest to pełny tryb offline.
+
+Test instalatora dla nowego środowiska:
 
 ```powershell
 .\tests\Test-BuildSetup.ps1 -ConnectionZip 'C:\pakiety\Nexo.Connection.zip' -SdkZip 'C:\pakiety\Nexo.Sdk.zip'
 ```
+
+Wymaga zainstalowanego systemowego .NET SDK 8 lub nowszego i dostępu do nuget.org.
+Tworzy izolowany katalog tymczasowy, sprawdza kompilację oraz zgodność paczek.
+Nie zakłada usługi Windows ani nie łączy się z bazą Nexo. ZIP Connection musi odpowiadać
+publicznej paczce NuGet, a SDK ma zawierać biblioteki potrzebne do kompilacji.
+
+### Gotowa paczka z CI
+
+Na serwerze wystarczy zwykły `install-nexo.ps1`. SDK .NET do kompilacji i źródło NuGet przygotowuje
+workflow repozytorium na maszynie GitHub Actions. Web wymaga artefaktu `zapqio-module`, zawierającego
+`module.zip`, z udanego workflow dla dokładnie wybranego commita. ZIP z GitHub Releases nie zastępuje
+tego artefaktu. Wzorcowy workflow jest w `dotnet-module-nexo-test/.github/workflows/build.yml`.
