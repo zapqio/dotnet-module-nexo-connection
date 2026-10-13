@@ -25,6 +25,9 @@
 .PARAMETER ServiceName
   Nazwa usługi runnera (domyślnie ZapqioRunner).
 
+.PARAMETER Language
+  Język komunikatów: pl, en albo de. Domyślnie pl; install-nexo.ps1 przekazuje wybrany język.
+
 .PARAMETER NoRestart
   Tylko podmiana zipa, bez restartu usługi (np. sprawdzenie bez zainstalowanej usługi).
 
@@ -66,10 +69,110 @@ param(
     [string] $ModulesPath,
     [string] $Log,
     [string] $State,
-    [string] $WorkDir
+    [string] $WorkDir,
+    [ValidateSet('pl', 'en', 'de')][string] $Language = 'pl'
 )
 
 $ErrorActionPreference = 'Stop'
+
+$messages = @{
+    pl = @{
+        MissingModuleSet = 'Brak kompletu modułów dla SDK {0} pod {1} (jeszcze nie zbudowany?). Obecne moduły zostają - działają z nowym SDK, a skrypt można uruchomić ponownie później.'
+        ModuleHashMismatch = 'Suma SHA-256 {0} nie zgadza się z manifestem'
+        ModuleReplaced = 'Podmieniono {0} (komplet dla SDK {1}, zbudowany {2}, testy na żywo: {3})'
+        NoService = 'Usługi {0} nie ma (runner z konsoli?) - uruchom runner ponownie ręcznie, żeby wczytał nowe SDK.'
+        ServiceRestarted = 'Usługa {0} zrestartowana.'
+        ServiceRestartFailed = 'Restart-Service {0} nie powiódł się ({1}). Kończę proces runnera - SCM podniesie usługę z opcji odzyskiwania (5 s).'
+        NoRunnerProcess = 'Nie znaleziono procesu Zapqio.Runner z {0} - zrestartuj usługę ręcznie: Restart-Service {1}'
+        RunnerStopped = 'Proces runnera zakończony (PID {0}); usługa wstanie z opcji odzyskiwania.'
+        MissingModules = 'Nie ma katalogu {0} - sprawdź -RunnerDir'
+        InvalidVersion = 'Wersja ma mieć trzy człony, np. 61.1.1 (podano: {0})'
+        Downloading = 'Pobieram {0}/{1} ...'
+        ExtractionFailed = 'Rozpakowanie {0} zakończyło się kodem {1}'
+        MissingBin = 'W rozpakowanym SDK nie ma katalogu Bin'
+        InvalidSdkDirectory = 'W {0} nie ma InsERT.Moria.Sfera.dll - to nie jest katalog Bin SDK'
+        SdkSource = 'SDK {0} z {1}'
+        LegacyZip = 'W Modules jest jeszcze Nexo.zip sprzed podziału modułu - niesie własny NexoClient i SDK, usuń go.'
+        NoRestart = 'Bez restartu (-NoRestart). Zrestartuj usługę {0}, żeby runner wczytał nowe SDK.'
+        Restarting = 'Restartuję usługę {0} ...'
+        LatestLog = 'Ostatnie wpisy logu runnera ({0}):'
+        Error = 'BŁĄD: {0}'
+        Downloaded = 'Pobrano {0:N0} MB, rozpakowuję ...'
+        Packing = 'Pakuję {0} plików ({1:N0} MB)'
+        Saved = 'Zapisano {0} ({1:N0} MB, SDK {2})'
+        Started = 'skrypt uruchomiony'
+        UpdatedNoRestart = 'SDK {0} podmienione, bez restartu (-NoRestart)'
+        UpdatedRestart = 'SDK {0} podmienione, restart usługi'
+        WarningPrefix = 'UWAGA: '
+    }
+    en = @{
+        MissingModuleSet = 'No module set for SDK {0} was found at {1} (not built yet?). Existing modules will be kept; they work with the new SDK. You can rerun this script later.'
+        ModuleHashMismatch = 'The SHA-256 checksum of {0} does not match the manifest'
+        ModuleReplaced = 'Replaced {0} (set for SDK {1}, built {2}, live tests: {3})'
+        NoService = 'Service {0} was not found (console runner?). Restart the runner manually to load the new SDK.'
+        ServiceRestarted = 'Service {0} restarted.'
+        ServiceRestartFailed = 'Restart-Service {0} failed ({1}). Stopping the runner process; SCM will restart the service using its recovery settings (5 s).'
+        NoRunnerProcess = 'No Zapqio.Runner process was found in {0}. Restart the service manually: Restart-Service {1}'
+        RunnerStopped = 'Runner process stopped (PID {0}); the service will restart using its recovery settings.'
+        MissingModules = 'Directory {0} was not found; check -RunnerDir'
+        InvalidVersion = 'The version must have three parts, e.g. 61.1.1 (received: {0})'
+        Downloading = 'Downloading {0}/{1} ...'
+        ExtractionFailed = 'Extracting {0} exited with code {1}'
+        MissingBin = 'The extracted SDK does not contain a Bin directory'
+        InvalidSdkDirectory = '{0} does not contain InsERT.Moria.Sfera.dll; this is not an SDK Bin directory'
+        SdkSource = 'SDK {0} from {1}'
+        LegacyZip = 'Modules still contains the old Nexo.zip from before the module split. It includes its own NexoClient and SDK; remove it.'
+        NoRestart = 'No restart (-NoRestart). Restart service {0} to load the new SDK.'
+        Restarting = 'Restarting service {0} ...'
+        LatestLog = 'Latest runner log entries ({0}):'
+        Error = 'ERROR: {0}'
+        Downloaded = 'Downloaded {0:N0} MB, extracting ...'
+        Packing = 'Packaging {0} files ({1:N0} MB)'
+        Saved = 'Saved {0} ({1:N0} MB, SDK {2})'
+        Started = 'script started'
+        UpdatedNoRestart = 'SDK {0} replaced, no restart (-NoRestart)'
+        UpdatedRestart = 'SDK {0} replaced, restarting service'
+        WarningPrefix = 'WARNING: '
+    }
+    de = @{
+        MissingModuleSet = 'Unter {1} wurde kein Modulsatz für SDK {0} gefunden (noch nicht erstellt?). Bestehende Module bleiben erhalten und funktionieren mit dem neuen SDK. Sie können das Skript später erneut ausführen.'
+        ModuleHashMismatch = 'Die SHA-256-Prüfsumme von {0} stimmt nicht mit dem Manifest überein'
+        ModuleReplaced = '{0} wurde ersetzt (Modulsatz für SDK {1}, erstellt {2}, Livetests: {3})'
+        NoService = 'Der Dienst {0} wurde nicht gefunden (Runner in einer Konsole?). Starten Sie den Runner manuell neu, um das neue SDK zu laden.'
+        ServiceRestarted = 'Dienst {0} wurde neu gestartet.'
+        ServiceRestartFailed = 'Restart-Service {0} ist fehlgeschlagen ({1}). Der Runner-Prozess wird beendet; SCM startet den Dienst über die Wiederherstellungseinstellungen neu (5 s).'
+        NoRunnerProcess = 'Kein Zapqio.Runner-Prozess aus {0} gefunden. Starten Sie den Dienst manuell neu: Restart-Service {1}'
+        RunnerStopped = 'Runner-Prozess beendet (PID {0}); der Dienst wird über die Wiederherstellungseinstellungen neu gestartet.'
+        MissingModules = 'Verzeichnis {0} wurde nicht gefunden; prüfen Sie -RunnerDir'
+        InvalidVersion = 'Die Version muss aus drei Teilen bestehen, z. B. 61.1.1 (angegeben: {0})'
+        Downloading = '{0}/{1} wird heruntergeladen ...'
+        ExtractionFailed = 'Das Entpacken von {0} wurde mit Code {1} beendet'
+        MissingBin = 'Das entpackte SDK enthält kein Bin-Verzeichnis'
+        InvalidSdkDirectory = '{0} enthält keine InsERT.Moria.Sfera.dll; dies ist kein Bin-Verzeichnis des SDK'
+        SdkSource = 'SDK {0} aus {1}'
+        LegacyZip = 'Modules enthält noch das alte Nexo.zip aus der Zeit vor der Modulaufteilung. Es enthält einen eigenen NexoClient und ein eigenes SDK; entfernen Sie es.'
+        NoRestart = 'Kein Neustart (-NoRestart). Starten Sie den Dienst {0} neu, um das neue SDK zu laden.'
+        Restarting = 'Dienst {0} wird neu gestartet ...'
+        LatestLog = 'Letzte Runner-Protokolleinträge ({0}):'
+        Error = 'FEHLER: {0}'
+        Downloaded = '{0:N0} MB heruntergeladen, wird entpackt ...'
+        Packing = '{0} Dateien werden gepackt ({1:N0} MB)'
+        Saved = '{0} gespeichert ({1:N0} MB, SDK {2})'
+        Started = 'Skript gestartet'
+        UpdatedNoRestart = 'SDK {0} ersetzt, kein Neustart (-NoRestart)'
+        UpdatedRestart = 'SDK {0} ersetzt, Dienst wird neu gestartet'
+        WarningPrefix = 'WARNUNG: '
+    }
+}
+
+# Keep translations inside the script: it can also be run directly from a downloaded scriptblock.
+function Get-InstallText {
+    param([string]$Key, [object[]]$Values = @())
+    $template = $messages[$Language][$Key]
+    if ($null -eq $template) { throw "Missing installer translation: $Language/$Key" }
+    return [string]::Format([Globalization.CultureInfo]::GetCultureInfo($Language), $template, $Values)
+}
+
 $ftp = 'https://ftp.insertcdn.pl/pub/aktualizacje/InsERT_nexo'
 
 function Write-Log([string] $Message, [switch] $IsWarning) {
@@ -78,7 +181,7 @@ function Write-Log([string] $Message, [switch] $IsWarning) {
         try {
             $dir = Split-Path $Log -Parent
             if ($dir -and -not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
-            Add-Content -Path $Log -Value ("[{0:yyyy-MM-dd HH:mm:ss}] {1}{2}" -f (Get-Date), $(if ($IsWarning) { 'UWAGA: ' } else { '' }), $Message) -Encoding UTF8
+            Add-Content -Path $Log -Value ("[{0:yyyy-MM-dd HH:mm:ss}] {1}{2}" -f (Get-Date), $(if ($IsWarning) { (Get-InstallText 'WarningPrefix') } else { '' }), $Message) -Encoding UTF8
         }
         catch { }
     }
@@ -114,7 +217,7 @@ function Update-ModuleSet([string] $ShortVersion, [string] $ModulesDir) {
         $manifest = $null
     }
     if (-not $manifest) {
-        Write-Log "Brak kompletu modułów dla SDK $ShortVersion pod $base (jeszcze nie zbudowany?). Obecne moduły zostają - działają z nowym SDK, a skrypt można uruchomić ponownie później." -IsWarning
+        Write-Log (Get-InstallText 'MissingModuleSet' @($ShortVersion, $base)) -IsWarning
         return
     }
     foreach ($m in $manifest.modules) {
@@ -124,34 +227,34 @@ function Update-ModuleSet([string] $ShortVersion, [string] $ModulesDir) {
         if ($ModulesUrl) { Invoke-WebRequest -Uri "$base/$($m.name)" -OutFile $new -UseBasicParsing }
         else { Copy-Item (Join-Path $base $m.name) $new }
         $hash = (Get-FileHash $new -Algorithm SHA256).Hash.ToLower()
-        if ($m.sha256 -and $hash -ne $m.sha256) { Remove-Item $new; throw "Suma SHA-256 $($m.name) nie zgadza się z manifestem" }
+        if ($m.sha256 -and $hash -ne $m.sha256) { Remove-Item $new; throw (Get-InstallText 'ModuleHashMismatch' @($m.name)) }
         Move-Item $new $target -Force
-        Write-Log "Podmieniono $($m.name) (komplet dla SDK $ShortVersion, zbudowany $($manifest.built), testy na żywo: $($manifest.testedLive))"
+        Write-Log (Get-InstallText 'ModuleReplaced' @($m.name, $ShortVersion, $manifest.built, $manifest.testedLive))
     }
 }
 
 function Restart-Runner {
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $service) {
-        Write-Log "Usługi $ServiceName nie ma (runner z konsoli?) - uruchom runner ponownie ręcznie, żeby wczytał nowe SDK." -IsWarning
+        Write-Log (Get-InstallText 'NoService' @($ServiceName)) -IsWarning
         return
     }
     try {
         Restart-Service -Name $ServiceName -ErrorAction Stop
-        Write-Log "Usługa $ServiceName zrestartowana."
+        Write-Log (Get-InstallText 'ServiceRestarted' @($ServiceName))
         return
     }
     catch {
-        Write-Log "Restart-Service $ServiceName nie powiódł się ($($_.Exception.Message)). Kończę proces runnera - SCM podniesie usługę z opcji odzyskiwania (5 s)." -IsWarning
+        Write-Log (Get-InstallText 'ServiceRestartFailed' @($ServiceName, $_.Exception.Message)) -IsWarning
     }
     # Zapas dla instalacji bez prawa start/stop dla konta usługi: własny proces wolno zakończyć.
     $procs = @(Get-Process -Name 'Zapqio.Runner' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($RunnerDir, [StringComparison]::OrdinalIgnoreCase) })
     if ($procs.Count -eq 0) {
-        Write-Log "Nie znaleziono procesu Zapqio.Runner z $RunnerDir - zrestartuj usługę ręcznie: Restart-Service $ServiceName" -IsWarning
+        Write-Log (Get-InstallText 'NoRunnerProcess' @($RunnerDir, $ServiceName)) -IsWarning
         return
     }
     $procs | Stop-Process -Force
-    Write-Log "Proces runnera zakończony (PID $($procs.Id -join ', ')); usługa wstanie z opcji odzyskiwania."
+    Write-Log (Get-InstallText 'RunnerStopped' @(($procs.Id -join ', ')))
 }
 
 # Ścieżki względne liczone od bieżącej lokalizacji PowerShella ("cd C:\zapqio\runner" + "-RunnerDir .").
@@ -168,42 +271,42 @@ $temp = Join-Path $WorkDir ('sdk-' + [guid]::NewGuid().ToString('N'))
 
 try {
     if (-not (Test-Path $modules)) {
-        throw "Nie ma katalogu $modules - sprawdź -RunnerDir"
+        throw (Get-InstallText 'MissingModules' @($modules))
     }
-    Write-State 'running' 'skrypt uruchomiony'
+    Write-State 'running' (Get-InstallText 'Started')
     New-Item $temp -ItemType Directory -Force | Out-Null
 
     if ($PSCmdlet.ParameterSetName -eq 'Download') {
         if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Wersja ma mieć trzy człony, np. 61.1.1 (podano: $Version)"
+            throw (Get-InstallText 'InvalidVersion' @($Version))
         }
         $file = 'nexoSDK_' + ($Version -replace '\.', '_') + '.exe'
         $exe = Join-Path $temp $file
-        Write-Log "Pobieram $ftp/$file ..."
+        Write-Log (Get-InstallText 'Downloading' @($ftp, $file))
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri "$ftp/$file" -OutFile $exe -UseBasicParsing
-        Write-Log ("Pobrano {0:N0} MB, rozpakowuję ..." -f ((Get-Item $exe).Length / 1MB))
+        Write-Log (Get-InstallText 'Downloaded' @(((Get-Item $exe).Length / 1MB)))
 
         # Plik to 7-Zip SFX: -y bez pytań, -o katalog docelowy; w środku nexoSDK_<pełna wersja>\Bin.
         $extract = Join-Path $temp 'sdk'
         $p = Start-Process -FilePath $exe -ArgumentList @('-y', "-o`"$extract`"") -Wait -PassThru -NoNewWindow
         if ($p.ExitCode -ne 0) {
-            throw "Rozpakowanie $file zakończyło się kodem $($p.ExitCode)"
+            throw (Get-InstallText 'ExtractionFailed' @($file, $p.ExitCode))
         }
         $bin = Get-ChildItem $extract -Directory -Filter 'Bin' -Recurse | Select-Object -First 1
         if (-not $bin) {
-            throw "W rozpakowanym SDK nie ma katalogu Bin"
+            throw (Get-InstallText 'MissingBin')
         }
         $SdkDir = $bin.FullName
     }
 
     $sfera = Join-Path $SdkDir 'InsERT.Moria.Sfera.dll'
     if (-not (Test-Path $sfera)) {
-        throw "W $SdkDir nie ma InsERT.Moria.Sfera.dll - to nie jest katalog Bin SDK"
+        throw (Get-InstallText 'InvalidSdkDirectory' @($SdkDir))
     }
     $sdkVersion = ([Diagnostics.FileVersionInfo]::GetVersionInfo($sfera).ProductVersion -split '\+')[0]
     $shortVersion = (($sdkVersion -split '\.')[0..2] -join '.')
-    Write-Log "SDK $sdkVersion z $SdkDir"
+    Write-Log (Get-InstallText 'SdkSource' @($sdkVersion, $SdkDir))
 
     # Paczka współdzielona runnera: ##Shared = inne paczki biorą stąd biblioteki,
     # pusty ##Dll = runner niczego tu nie skanuje (w SDK nie ma metod ani wstrzyknięć).
@@ -214,7 +317,7 @@ try {
     New-Item $staging -ItemType Directory | Out-Null
     $files = Get-ChildItem $SdkDir -File | Where-Object { $_.Extension -in '.dll', '.pak' }
     $files | Copy-Item -Destination $staging
-    Write-Log ("Pakuję {0} plików ({1:N0} MB)" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1MB))
+    Write-Log (Get-InstallText 'Packing' @($files.Count, (($files | Measure-Object Length -Sum).Sum / 1MB)))
     New-Item (Join-Path $staging '##Shared') -ItemType File | Out-Null
     New-Item (Join-Path $staging '##Dll') -ItemType File | Out-Null
 
@@ -225,11 +328,11 @@ try {
     if (Test-Path $new) { Remove-Item $new }
     [IO.Compression.ZipFile]::CreateFromDirectory($staging, $new)
     Move-Item $new $zip -Force
-    Write-Log ("Zapisano {0} ({1:N0} MB, SDK {2})" -f $zip, ((Get-Item $zip).Length / 1MB), $sdkVersion)
+    Write-Log (Get-InstallText 'Saved' @($zip, ((Get-Item $zip).Length / 1MB), $sdkVersion))
     [IO.File]::WriteAllText((Join-Path $RunnerDir 'nexo-sdk.json'), (@{ version = $sdkVersion; at = (Get-Date).ToString('o') } | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 
     if (Test-Path (Join-Path $modules 'Nexo.zip')) {
-        Write-Log "W Modules jest jeszcze Nexo.zip sprzed podziału modułu - niesie własny NexoClient i SDK, usuń go." -IsWarning
+        Write-Log (Get-InstallText 'LegacyZip') -IsWarning
     }
 
     if ($ModulesUrl -or $ModulesPath) {
@@ -237,26 +340,26 @@ try {
     }
 
     if ($NoRestart) {
-        Write-State 'ok' "SDK $sdkVersion podmienione, bez restartu (-NoRestart)"
-        Write-Log "Bez restartu (-NoRestart). Zrestartuj usługę $ServiceName, żeby runner wczytał nowe SDK."
+        Write-State 'ok' (Get-InstallText 'UpdatedNoRestart' @($sdkVersion))
+        Write-Log (Get-InstallText 'NoRestart' @($ServiceName))
         return
     }
-    Write-State 'ok' "SDK $sdkVersion podmienione, restart usługi"
-    Write-Log "Restartuję usługę $ServiceName ..."
+    Write-State 'ok' (Get-InstallText 'UpdatedRestart' @($sdkVersion))
+    Write-Log (Get-InstallText 'Restarting' @($ServiceName))
     Restart-Runner
     Start-Sleep -Seconds 15
     $latest = Get-ChildItem (Join-Path $RunnerDir 'Logs') -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ne (Split-Path $Log -Leaf) } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($latest) {
-        Write-Log "Ostatnie wpisy logu runnera ($($latest.Name)):"
+        Write-Log (Get-InstallText 'LatestLog' @($latest.Name))
         Get-Content $latest.FullName -Tail 200 |
             Select-String 'Nexo.Sdk|Nexo.Connection|nie została utworzona' |
             ForEach-Object { Write-Log ('  ' + $_.Line) }
     }
 }
 catch {
-    Write-Log "BŁĄD: $($_.Exception.Message)" -IsWarning
+    Write-Log (Get-InstallText 'Error' @($_.Exception.Message)) -IsWarning
     Write-State 'failed' $_.Exception.Message
     exit 1
 }

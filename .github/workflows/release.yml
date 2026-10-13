@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sprawdź języki instalatora w Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/Test-InstallerLanguage.ps1
+
       - name: Wersja paczki z csproj, wersja SDK z props
         id: ver
         shell: bash

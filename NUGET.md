@@ -57,7 +57,7 @@ the module. The package references `InsERT.Moria.API`, `InsERT.Moria.DaneDomysln
 Set them in the project, in `Directory.Build.props` or with `-p:`. A missing SDK file fails the build
 with `ZNEXO001`; restore does not download the SDK. `NexoSdkCopyLocal=true` copies the SDK libraries
 to the output; keep the default `false` for runner packages. On a Zapqio runner,
-`install-nexo.ps1 -BuildTools` prepares the SDK for builds.
+`install-nexo.ps1` always prepares the SDK for builds.
 
 Runner installation and configuration: [repository README](https://github.com/zapqio/dotnet-module-nexo-connection).
 

@@ -15,10 +15,15 @@
       3. pobiera Nexo.Connection.zip z GitHub Releases do Modules\,
       4. pakuje SDK InsERT nexo w wersji Subiekta do Modules\Nexo.Sdk.zip (update-nexo-sdk.ps1 z paczki
          pobiera SDK z publicznego FTP InsERT - ok. 500 MB),
-      5. restartuje usługę i czeka, aż w logu runnera pojawi się metoda "Nexo: Who am I".
+      5. przygotowuje budowanie modułów na runnerze: SDK .NET, biblioteki SDK nexo oraz NuGet,
+      6. restartuje usługę i czeka, aż w logu runnera pojawi się metoda "Nexo: Who am I".
 
     Uruchomiony ponownie działa jak aktualizacja: dane połączenia zostają (pyta tylko o brakujące),
     zip modułu jest podmieniany na najnowszy, SDK podmieniane tylko przy zmianie wersji Subiekta.
+
+.PARAMETER Language
+    Język komunikatów i pytań: pl, en albo de. Bez parametru: wybór na początku instalacji.
+    Enter wybiera język systemu (dla innych języków: angielski); bez konsoli używana jest ta sama wartość.
 
 .PARAMETER InstallDir
     Katalog instalacji runnera. Domyślnie C:\zapqio\runner.
@@ -62,14 +67,10 @@
 
 .PARAMETER PackagePath
     Lokalny Nexo.Connection.zip (np. z bin\Release po dotnet publish) zamiast pobierania z GitHub Releases;
-    -Version jest wtedy bez znaczenia. Razem z -SdkDir daje instalację bez dostępu do internetu.
-
-.PARAMETER BuildTools
-    Przygotowuje także budowanie modułów nexo na runnerze: SDK .NET, referencje SDK nexo oraz
-    pobieranie publicznych paczek NuGet i cache dostępny dla konta usługi. Dla repozytoriów w trybie CI nie jest potrzebne.
+    -Version jest wtedy bez znaczenia. Zależności budowania są nadal pobierane z nuget.org.
 
 .PARAMETER ConnectionPackagePath
-    Lokalny NuGet Connection dla -BuildTools zamiast pobierania go z nuget.org.
+    Lokalny NuGet Connection do budowania modułów zamiast pobierania go z nuget.org.
     DLL musi odpowiadać ZIP-owi; Core jest nadal pobierany z nuget.org.
 
 .PARAMETER NoRestart
@@ -79,7 +80,10 @@
     .\install-nexo.ps1
 
 .EXAMPLE
-    .\install-nexo.ps1 -DatabaseServer 'SERWER\INSERTNEXO' -DatabaseName Nexo_Firma -DatabaseUser sa -DatabasePassword '...' -UserName Szef -UserPassword '...'
+    .\install-nexo.ps1 -Language de
+
+.EXAMPLE
+    .\install-nexo.ps1 -Language pl -DatabaseServer 'SERWER\INSERTNEXO' -DatabaseName Nexo_Firma -DatabaseUser sa -DatabasePassword '...' -UserName Szef -UserPassword '...'
 
 .NOTES
     Bez klonowania repo, w PowerShellu jako administrator (TrimStart zdejmuje BOM UTF-8, którego irm nie
@@ -108,12 +112,264 @@ param(
     [string]$SubiektVersion,
     [string]$SdkDir,
     [string]$PackagePath,
-    [switch]$BuildTools,
     [string]$ConnectionPackagePath,
-    [switch]$NoRestart
+    [switch]$NoRestart,
+    [ValidateSet('pl', 'en', 'de')][string]$Language
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-InstallLanguage {
+    param(
+        [string]$RequestedLanguage,
+        [string]$CultureName = [Globalization.CultureInfo]::CurrentUICulture.Name,
+        [switch]$Prompt
+    )
+    if ($RequestedLanguage) { return $RequestedLanguage.ToLowerInvariant() }
+    $defaultLanguage = [Globalization.CultureInfo]::GetCultureInfo($CultureName).TwoLetterISOLanguageName
+    if ($defaultLanguage -notin 'pl', 'en', 'de') { $defaultLanguage = 'en' }
+    if (-not $Prompt) { return $defaultLanguage }
+
+    Write-Host '1. Polski (pl)'
+    Write-Host '2. English (en)'
+    Write-Host '3. Deutsch (de)'
+    while ($true) {
+        try { $answer = Read-Host "Język / Language / Sprache [$defaultLanguage]" }
+        catch { return $defaultLanguage } # PowerShell -NonInteractive has no input prompt.
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $defaultLanguage }
+        switch ($answer.Trim().ToLowerInvariant()) {
+            { $_ -in '1', 'pl' } { return 'pl' }
+            { $_ -in '2', 'en' } { return 'en' }
+            { $_ -in '3', 'de' } { return 'de' }
+        }
+        Write-Warning 'Wybierz / Choose / Wählen Sie: 1/pl, 2/en, 3/de.'
+    }
+}
+
+$Language = Resolve-InstallLanguage -RequestedLanguage $Language -Prompt:([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
+
+$messages = @{
+    pl = @{
+        AdminRequired = 'Uruchom ten skrypt w PowerShellu jako administrator.'
+        NoService = 'Usługi {0} nie ma (runner uruchamiany z konsoli?). Paczki zostaną wgrane, restart zrób sam.'
+        InvalidConfig = 'Nie udało się sparsować {0}: {1}. Popraw albo usuń plik i uruchom skrypt ponownie.'
+        ConnectionPrompt = 'Dane połączenia z Subiektem nexo (ten sam serwer SQL i baza podmiotu, do których łączy się Subiekt):'
+        ServerPrompt = 'Serwer SQL, np. SERWER\INSERTNEXO'
+        SqlUserPrompt = 'Użytkownik SQL, np. sa (Enter = uwierzytelnianie Windows kontem usługi runnera)'
+        SqlPasswordPrompt = 'Hasło SQL użytkownika {0}'
+        WindowsAccount = 'Do SQL połączy się konto usługi ({0}) - musi mieć dostęp do bazy podmiotu. Ten skrypt testuje połączenie kontem {1}.'
+        DatabaseList = '  Bazy na {0}: {1}'
+        ServerConnectionFailed = 'Nie udało się połączyć z {0}: {1}'
+        DatabasePrompt = 'Baza podmiotu, np. Nexo_Firma'
+        OperatorPrompt = 'Operator Subiekta (login z okna logowania), np. Szef'
+        OperatorPasswordPrompt = 'Hasło operatora {0}'
+        MissingConnection = 'Brak danych połączenia: {0}. Sesja bez konsoli - podaj je parametrami (-DatabaseServer, -DatabaseName, -DatabaseUser/-DatabasePassword albo -WindowsLogin, -UserName, -UserPassword).'
+        CheckingSql = '==> Sprawdzam połączenie z bazą {0} na {1}...'
+        SqlReady = '==> Połączenie z SQL działa.'
+        ConnectionFailed = 'Połączenie nie powiodło się: {0}'
+        CorrectSettings = 'Popraw dane (Enter zostawia wartość w nawiasie).'
+        SqlFailed = 'Połączenie z bazą {0} na {1} nie powiodło się: {2}'
+        DatabaseVersion = '==> Wersja Subiekta z bazy: {0} ({1})'
+        InvalidVersionResult = 'Zapytanie o wersję ({0}) zwróciło ''{1}'' - to nie jest numer wersji.'
+        VersionQueryFailed = 'Zapytanie o wersję ({0}) nie powiodło się: {1}'
+        NoDatabaseVersion = 'Nie udało się odczytać wersji Subiekta z bazy (uruchom z -Verbose, żeby zobaczyć przyczyny).'
+        InvalidVersion = '-SubiektVersion ma mieć trzy człony, np. 61.1.1 (podano: {0})'
+        VersionPrompt = 'Wersja Subiekta z "Pomoc > O programie", np. 61.1.1'
+        VersionExample = 'Podaj wersję z trzema członami, np. 61.1.1.'
+        MissingVersion = 'Nie znam wersji Subiekta - podaj ją w -SubiektVersion (trzy człony, np. 61.1.1; w Subiekcie: Pomoc > O programie).'
+        AclFailed = 'icacls na {0} zakończyło się kodem {1}.'
+        ConfigSaved = '==> Zapisano sekcję Connect w {0}.'
+        LegacyConfig = 'Obok binarki leży stary {0} - moduł czyta już tylko {1}, ten plik można usunąć.'
+        MissingPackage = 'Nie ma pliku {0} (-PackagePath).'
+        LocalPackage = '==> Biorę paczkę z {0}'
+        Downloading = '==> Pobieram {0}'
+        DownloadFailed = 'Nie udało się pobrać paczki ({0}). Release''y: https://github.com/{1}/releases'
+        InvalidPackage = 'W paczce nie ma Nexo.Connection.dll albo {0} - to nie wygląda na {1}.'
+        ConnectionInstalled = '==> Nexo.Connection {0} w {1}.'
+        LegacyZip = 'Stary Nexo.zip (sprzed podziału na Nexo.Sdk + Nexo.Connection) przemianowany na Nexo.zip.old - runner go pominie; usuń, gdy nowe paczki zadziałają.'
+        SdkPresent = '==> SDK {0} już jest w {1} - bez podmiany.'
+        PackingSdk = '==> Pakuję SDK z {0} do {1}...'
+        DownloadingSdk = '==> Pobieram SDK InsERT nexo {0} (ok. 500 MB) i pakuję do {1}...'
+        SdkSetupFailed = 'update-nexo-sdk.ps1 zakończył się kodem {0} - SDK nie zostało zainstalowane. Popraw przyczynę z komunikatu wyżej i uruchom ponownie: {1} -Version {2} -RunnerDir {3}'
+        SdkMismatch = 'SDK {0} w {1} nie zgadza się z wersją Subiekta z bazy ({2}) - Sfera odrzuci połączenie. Uruchom: {3} -Version {4} -RunnerDir {5}'
+        BuildSetupFailed = 'Przygotowanie budowania modułów nie powiodło się. Popraw błąd i uruchom install-nexo-build.ps1.'
+        NoRestart = '==> Bez restartu (-NoRestart). Runner wczyta paczki przy następnym starcie: Restart-Service {0}'
+        Restarting = '==> Restartuję usługę {0}...'
+        WaitingMethod = '==> Czekam, aż runner ogłosi metodę "Nexo: Who am I" (do 60 s)...'
+        MethodReady = '==> Runner ogłosił metodę "Nexo: Who am I".'
+        MethodUnconfirmed = 'W ciągu 60 s log nie potwierdził metody - zajrzyj do {0} (szukaj: Nexo.Sdk, Nexo.Connection, ''nie została utworzona'').'
+        FileLogsDisabled = '==> Logi plikowe wyłączone - listę metod sprawdź w panelu Web.'
+        Summary = 'Moduł Nexo na runnerze {0}{1}.'
+        SummaryConnection = '  Nexo.Connection: {0} ({1})'
+        SummarySdk = '  SDK InsERT nexo: {0} ({1})'
+        SummaryConfig = '  Konfiguracja: {0}'
+        SummaryUpdate = '  Skrypt podmiany SDK: {0} (po aktualizacji Subiekta moduł uruchamia go sam)'
+        Verification = 'Sprawdzenie: w panelu Web uruchom na tym runnerze metodę "Nexo: Who am I" - zwraca operatora oraz wersję i paczkę SDK.'
+        Troubleshooting = 'Błąd zadania mówi wprost, co poprawić (SDK, dane SQL albo hasło operatora).'
+        InstallingModules = 'Paczki z metodami (np. Nexo.Invoices.zip) wrzucaj do {0} i restartuj usługę.'
+        KeepValue = ' (Enter = bez zmian)'
+        EmptyValue = ' (Enter = brak)'
+        AuditVersionSource = 'ślad rewizyjny - ostatni program łączący się z bazą'
+        MissingRunner = 'W {0} nie ma Zapqio.Runner.exe. Najpierw zainstaluj runner (https://github.com/zapqio/dotnet-runner, install.ps1), a jeśli jest w innym katalogu, podaj go w -InstallDir.'
+        WrongRuntime = 'Runner w {0} jest zbudowany na {1}, a moduły Nexo działają tylko na .NET 8. Uruchom install.ps1 runnera bez -Net10, aby zainstalować wariant .NET 8 z zachowaniem konfiguracji i modułów, a potem uruchom ten skrypt ponownie.'
+        SummarySubiekt = '  Subiekt: {0}, baza {1}, operator {2}, SQL: {3}'
+        WindowsAuthentication = 'uwierzytelnianie Windows'
+        LegacyScriptLanguage = 'Skrypt {0} z tej paczki nie obsługuje wyboru języka; jego komunikaty pozostaną po polsku.'
+    }
+    en = @{
+        AdminRequired = 'Run this script in PowerShell as administrator.'
+        NoService = 'Service {0} was not found (is the runner started from a console?). Packages will be installed; restart the runner manually.'
+        InvalidConfig = 'Could not parse {0}: {1}. Fix or remove the file and run this script again.'
+        ConnectionPrompt = 'Subiekt nexo connection settings (the same SQL server and company database used by Subiekt):'
+        ServerPrompt = 'SQL server, e.g. SERVER\INSERTNEXO'
+        SqlUserPrompt = 'SQL user, e.g. sa (Enter = Windows authentication using the runner service account)'
+        SqlPasswordPrompt = 'SQL password for {0}'
+        WindowsAccount = 'SQL will use the service account ({0}), which needs access to the company database. This script tests the connection as {1}.'
+        DatabaseList = '  Databases on {0}: {1}'
+        ServerConnectionFailed = 'Could not connect to {0}: {1}'
+        DatabasePrompt = 'Company database, e.g. Nexo_Firma'
+        OperatorPrompt = 'Subiekt operator (username from the login window), e.g. Szef'
+        OperatorPasswordPrompt = 'Password for operator {0}'
+        MissingConnection = 'Missing connection settings: {0}. No console is available; provide parameters (-DatabaseServer, -DatabaseName, -DatabaseUser/-DatabasePassword or -WindowsLogin, -UserName, -UserPassword).'
+        CheckingSql = '==> Checking the connection to database {0} on {1}...'
+        SqlReady = '==> SQL connection successful.'
+        ConnectionFailed = 'Connection failed: {0}'
+        CorrectSettings = 'Correct the settings (Enter keeps the value in brackets).'
+        SqlFailed = 'Connection to database {0} on {1} failed: {2}'
+        DatabaseVersion = '==> Subiekt version from the database: {0} ({1})'
+        InvalidVersionResult = 'The version query ({0}) returned ''{1}'', which is not a version number.'
+        VersionQueryFailed = 'The version query ({0}) failed: {1}'
+        NoDatabaseVersion = 'Could not read the Subiekt version from the database (use -Verbose for details).'
+        InvalidVersion = '-SubiektVersion must have three parts, e.g. 61.1.1 (received: {0})'
+        VersionPrompt = 'Subiekt version from "Pomoc > O programie" (Help > About), e.g. 61.1.1'
+        VersionExample = 'Enter a three-part version, e.g. 61.1.1.'
+        MissingVersion = 'The Subiekt version is unknown. Specify -SubiektVersion with three parts, e.g. 61.1.1 (in Subiekt: Pomoc > O programie / Help > About).'
+        AclFailed = 'icacls for {0} exited with code {1}.'
+        ConfigSaved = '==> Saved the Connect section in {0}.'
+        LegacyConfig = 'An old {0} is next to the executable. The module now reads only {1}; the old file can be removed.'
+        MissingPackage = 'File {0} was not found (-PackagePath).'
+        LocalPackage = '==> Using the package from {0}'
+        Downloading = '==> Downloading {0}'
+        DownloadFailed = 'Could not download the package ({0}). Releases: https://github.com/{1}/releases'
+        InvalidPackage = 'The package is missing Nexo.Connection.dll or {0}; it does not appear to be {1}.'
+        ConnectionInstalled = '==> Nexo.Connection {0} installed in {1}.'
+        LegacyZip = 'The old Nexo.zip (from before the Nexo.Sdk + Nexo.Connection split) was renamed to Nexo.zip.old. The runner will ignore it; remove it once the new packages work.'
+        SdkPresent = '==> SDK {0} is already in {1}; no replacement needed.'
+        PackingSdk = '==> Packaging the SDK from {0} into {1}...'
+        DownloadingSdk = '==> Downloading InsERT nexo SDK {0} (about 500 MB) and packaging it into {1}...'
+        SdkSetupFailed = 'update-nexo-sdk.ps1 exited with code {0}; the SDK was not installed. Fix the error above and rerun: {1} -Version {2} -RunnerDir {3}'
+        SdkMismatch = 'SDK {0} in {1} does not match the Subiekt database version ({2}); Sfera will reject the connection. Run: {3} -Version {4} -RunnerDir {5}'
+        BuildSetupFailed = 'Build environment setup failed. Fix the error and run install-nexo-build.ps1.'
+        NoRestart = '==> No restart (-NoRestart). The runner will load packages on its next start: Restart-Service {0}'
+        Restarting = '==> Restarting service {0}...'
+        WaitingMethod = '==> Waiting for the runner to register "Nexo: Who am I" (up to 60 s)...'
+        MethodReady = '==> The runner registered "Nexo: Who am I".'
+        MethodUnconfirmed = 'The log did not confirm the method within 60 s. Check {0} (search for: Nexo.Sdk, Nexo.Connection, ''nie została utworzona'').'
+        FileLogsDisabled = '==> File logging is disabled. Check the method list in the Web panel.'
+        Summary = 'Nexo module on runner {0}{1}.'
+        SummaryConnection = '  Nexo.Connection: {0} ({1})'
+        SummarySdk = '  InsERT nexo SDK: {0} ({1})'
+        SummaryConfig = '  Configuration: {0}'
+        SummaryUpdate = '  SDK update script: {0} (the module runs it automatically after a Subiekt update)'
+        Verification = 'To verify, run "Nexo: Who am I" on this runner in the Web panel. It returns the operator, SDK version and SDK package.'
+        Troubleshooting = 'A task error indicates what to fix: SDK, SQL settings or operator password.'
+        InstallingModules = 'Copy method packages (e.g. Nexo.Invoices.zip) to {0} and restart the service.'
+        KeepValue = ' (Enter = keep current value)'
+        EmptyValue = ' (Enter = leave empty)'
+        AuditVersionSource = 'audit trail - last application connected to the database'
+        MissingRunner = 'Zapqio.Runner.exe was not found in {0}. Install the runner first (https://github.com/zapqio/dotnet-runner, install.ps1), or specify its directory with -InstallDir.'
+        WrongRuntime = 'The runner in {0} targets {1}, but Nexo modules require .NET 8. Run the runner install.ps1 without -Net10 to install the .NET 8 variant while keeping configuration and modules, then run this script again.'
+        SummarySubiekt = '  Subiekt: {0}, database {1}, operator {2}, SQL: {3}'
+        WindowsAuthentication = 'Windows authentication'
+        LegacyScriptLanguage = 'Script {0} from this package does not support language selection; its messages will remain in Polish.'
+    }
+    de = @{
+        AdminRequired = 'Führen Sie dieses Skript in PowerShell als Administrator aus.'
+        NoService = 'Der Dienst {0} wurde nicht gefunden (läuft der Runner in einer Konsole?). Die Pakete werden installiert; starten Sie den Runner manuell neu.'
+        InvalidConfig = '{0} konnte nicht eingelesen werden: {1}. Korrigieren oder entfernen Sie die Datei und führen Sie das Skript erneut aus.'
+        ConnectionPrompt = 'Verbindungsdaten für Subiekt nexo (derselbe SQL-Server und dieselbe Firmendatenbank wie in Subiekt):'
+        ServerPrompt = 'SQL-Server, z. B. SERVER\INSERTNEXO'
+        SqlUserPrompt = 'SQL-Benutzer, z. B. sa (Eingabe = Windows-Authentifizierung mit dem Dienstkonto des Runners)'
+        SqlPasswordPrompt = 'SQL-Kennwort für {0}'
+        WindowsAccount = 'Die SQL-Verbindung verwendet das Dienstkonto ({0}), das Zugriff auf die Firmendatenbank benötigt. Dieses Skript testet die Verbindung als {1}.'
+        DatabaseList = '  Datenbanken auf {0}: {1}'
+        ServerConnectionFailed = 'Verbindung zu {0} fehlgeschlagen: {1}'
+        DatabasePrompt = 'Firmendatenbank, z. B. Nexo_Firma'
+        OperatorPrompt = 'Subiekt-Benutzer (Name aus dem Anmeldefenster), z. B. Szef'
+        OperatorPasswordPrompt = 'Kennwort für Benutzer {0}'
+        MissingConnection = 'Verbindungsdaten fehlen: {0}. Keine Konsole verfügbar; geben Sie die Parameter an (-DatabaseServer, -DatabaseName, -DatabaseUser/-DatabasePassword oder -WindowsLogin, -UserName, -UserPassword).'
+        CheckingSql = '==> Verbindung zur Datenbank {0} auf {1} wird geprüft...'
+        SqlReady = '==> SQL-Verbindung erfolgreich.'
+        ConnectionFailed = 'Verbindung fehlgeschlagen: {0}'
+        CorrectSettings = 'Korrigieren Sie die Angaben (Eingabe behält den Wert in Klammern bei).'
+        SqlFailed = 'Verbindung zur Datenbank {0} auf {1} fehlgeschlagen: {2}'
+        DatabaseVersion = '==> Subiekt-Version aus der Datenbank: {0} ({1})'
+        InvalidVersionResult = 'Die Versionsabfrage ({0}) lieferte ''{1}''; dies ist keine Versionsnummer.'
+        VersionQueryFailed = 'Die Versionsabfrage ({0}) ist fehlgeschlagen: {1}'
+        NoDatabaseVersion = 'Die Subiekt-Version konnte nicht aus der Datenbank gelesen werden (Details mit -Verbose).'
+        InvalidVersion = '-SubiektVersion muss aus drei Teilen bestehen, z. B. 61.1.1 (angegeben: {0})'
+        VersionPrompt = 'Subiekt-Version aus "Pomoc > O programie" (Hilfe > Über), z. B. 61.1.1'
+        VersionExample = 'Geben Sie eine dreiteilige Version ein, z. B. 61.1.1.'
+        MissingVersion = 'Die Subiekt-Version ist unbekannt. Geben Sie -SubiektVersion mit drei Teilen an, z. B. 61.1.1 (in Subiekt: Pomoc > O programie / Hilfe > Über).'
+        AclFailed = 'icacls für {0} wurde mit Code {1} beendet.'
+        ConfigSaved = '==> Der Abschnitt Connect wurde in {0} gespeichert.'
+        LegacyConfig = 'Neben der Programmdatei liegt eine alte Datei {0}. Das Modul liest nur noch {1}; die alte Datei kann entfernt werden.'
+        MissingPackage = 'Datei {0} wurde nicht gefunden (-PackagePath).'
+        LocalPackage = '==> Paket aus {0} wird verwendet'
+        Downloading = '==> {0} wird heruntergeladen'
+        DownloadFailed = 'Das Paket konnte nicht heruntergeladen werden ({0}). Veröffentlichungen: https://github.com/{1}/releases'
+        InvalidPackage = 'Im Paket fehlt Nexo.Connection.dll oder {0}; es scheint kein gültiges {1} zu sein.'
+        ConnectionInstalled = '==> Nexo.Connection {0} wurde in {1} installiert.'
+        LegacyZip = 'Das alte Nexo.zip (vor der Aufteilung in Nexo.Sdk + Nexo.Connection) wurde in Nexo.zip.old umbenannt. Der Runner ignoriert es; entfernen Sie es, sobald die neuen Pakete funktionieren.'
+        SdkPresent = '==> SDK {0} ist bereits in {1} vorhanden; kein Austausch erforderlich.'
+        PackingSdk = '==> Das SDK aus {0} wird in {1} gepackt...'
+        DownloadingSdk = '==> InsERT nexo SDK {0} (ca. 500 MB) wird heruntergeladen und in {1} gepackt...'
+        SdkSetupFailed = 'update-nexo-sdk.ps1 wurde mit Code {0} beendet; das SDK wurde nicht installiert. Beheben Sie den obigen Fehler und starten Sie erneut: {1} -Version {2} -RunnerDir {3}'
+        SdkMismatch = 'SDK {0} in {1} stimmt nicht mit der Subiekt-Datenbankversion ({2}) überein; Sfera wird die Verbindung ablehnen. Führen Sie aus: {3} -Version {4} -RunnerDir {5}'
+        BuildSetupFailed = 'Die Einrichtung der Build-Umgebung ist fehlgeschlagen. Beheben Sie den Fehler und führen Sie install-nexo-build.ps1 aus.'
+        NoRestart = '==> Kein Neustart (-NoRestart). Der Runner lädt die Pakete beim nächsten Start: Restart-Service {0}'
+        Restarting = '==> Dienst {0} wird neu gestartet...'
+        WaitingMethod = '==> Warten auf die Registrierung von "Nexo: Who am I" durch den Runner (bis zu 60 s)...'
+        MethodReady = '==> Der Runner hat "Nexo: Who am I" registriert.'
+        MethodUnconfirmed = 'Das Protokoll hat die Methode innerhalb von 60 s nicht bestätigt. Prüfen Sie {0} (Suchbegriffe: Nexo.Sdk, Nexo.Connection, ''nie została utworzona'').'
+        FileLogsDisabled = '==> Dateiprotokollierung ist deaktiviert. Prüfen Sie die Methodenliste im Webpanel.'
+        Summary = 'Nexo-Modul auf Runner {0}{1}.'
+        SummaryConnection = '  Nexo.Connection: {0} ({1})'
+        SummarySdk = '  InsERT nexo SDK: {0} ({1})'
+        SummaryConfig = '  Konfiguration: {0}'
+        SummaryUpdate = '  SDK-Aktualisierungsskript: {0} (wird nach einem Subiekt-Update automatisch vom Modul gestartet)'
+        Verification = 'Zur Prüfung führen Sie im Webpanel auf diesem Runner "Nexo: Who am I" aus. Die Methode liefert Benutzer, SDK-Version und SDK-Paket.'
+        Troubleshooting = 'Eine Fehlermeldung der Aufgabe zeigt, was korrigiert werden muss: SDK, SQL-Einstellungen oder Benutzerkennwort.'
+        InstallingModules = 'Kopieren Sie Methodenpakete (z. B. Nexo.Invoices.zip) nach {0} und starten Sie den Dienst neu.'
+        KeepValue = ' (Eingabe = aktuellen Wert beibehalten)'
+        EmptyValue = ' (Eingabe = leer lassen)'
+        AuditVersionSource = 'Änderungsprotokoll - letzte mit der Datenbank verbundene Anwendung'
+        MissingRunner = 'Zapqio.Runner.exe wurde in {0} nicht gefunden. Installieren Sie zuerst den Runner (https://github.com/zapqio/dotnet-runner, install.ps1), oder geben Sie sein Verzeichnis mit -InstallDir an.'
+        WrongRuntime = 'Der Runner in {0} verwendet {1}, Nexo-Module benötigen jedoch .NET 8. Führen Sie install.ps1 des Runners ohne -Net10 aus, um die .NET-8-Variante unter Beibehaltung der Konfiguration und Module zu installieren. Führen Sie danach dieses Skript erneut aus.'
+        SummarySubiekt = '  Subiekt: {0}, Datenbank {1}, Benutzer {2}, SQL: {3}'
+        WindowsAuthentication = 'Windows-Authentifizierung'
+        LegacyScriptLanguage = 'Das Skript {0} aus diesem Paket unterstützt keine Sprachauswahl; seine Meldungen bleiben auf Polnisch.'
+    }
+}
+
+# Keep translations inside the script: it can also be run directly from a downloaded scriptblock.
+function Get-InstallText {
+    param([string]$Key, [object[]]$Values = @())
+    $template = $messages[$Language][$Key]
+    if ($null -eq $template) { throw "Missing installer translation: $Language/$Key" }
+    return [string]::Format([Globalization.CultureInfo]::GetCultureInfo($Language), $template, $Values)
+}
+
+function Get-InstallerLanguageArguments {
+    param([string]$Path)
+    # Older Connection ZIPs contain a script without -Language; keep those releases installable.
+    if ((Get-Command -Name $Path -ErrorAction Stop).Parameters.ContainsKey('Language')) {
+        return @('-Language', $Language)
+    }
+    if ($Language -ne 'pl') {
+        Write-Warning (Get-InstallText 'LegacyScriptLanguage' @((Split-Path -Path $Path -Leaf)))
+    }
+}
 
 $repo = 'zapqio/dotnet-module-nexo-connection'
 $moduleZipName = 'Nexo.Connection.zip'
@@ -128,14 +384,14 @@ $configFileName = 'nexoModule.json'
 $versionQueries = @(
     @{ Source = 'InsLauncher.InstalledProducts'
        Query  = "SELECT TOP 1 CAST(VersionMajor AS varchar(10)) + '.' + CAST(VersionMinor AS varchar(10)) + '.' + CAST(VersionBuild AS varchar(10)) + '.' + CAST(VersionRevision AS varchar(10)) FROM InsLauncher.InstalledProducts WHERE Name = 'Nexo'" },
-    @{ Source = 'ślad rewizyjny - ostatni program łączący się z bazą'
+    @{ Source = (Get-InstallText 'AuditVersionSource')
        Query  = 'SELECT TOP 1 Wersja FROM ModelDanychContainer.ProgramyZdarzenSladuRewizyjnego ORDER BY Id DESC' }
 )
 
 # #Requires -RunAsAdministrator nie działa, gdy skrypt idzie przez irm | scriptblock
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Uruchom ten skrypt w PowerShellu jako administrator.'
+    throw (Get-InstallText 'AdminRequired')
 }
 
 # ConvertTo-Json w Windows PowerShell formatuje brzydko (podwójne spacje po dwukropku,
@@ -156,8 +412,8 @@ function Format-Json {
 # Enter zostawia stare, przy braku Enter = brak hasła (operator Subiekta może go nie mieć).
 function Read-Value {
     param([string]$Prompt, [string]$Current, [switch]$Required, [switch]$Secret)
-    $hint = if ($Current) { if ($Secret) { ' (Enter = bez zmian)' } else { " [$Current]" } }
-            elseif (-not $Required) { ' (Enter = brak)' } else { '' }
+    $hint = if ($Current) { if ($Secret) { (Get-InstallText 'KeepValue') } else { " [$Current]" } }
+            elseif (-not $Required) { (Get-InstallText 'EmptyValue') } else { '' }
     do {
         if ($Secret) {
             $secure = Read-Host "$Prompt$hint" -AsSecureString
@@ -228,11 +484,7 @@ function Get-ShortVersion {
 $InstallDir = $InstallDir.TrimEnd('\')
 $exePath = Join-Path $InstallDir 'Zapqio.Runner.exe'
 if (-not (Test-Path $exePath)) {
-    throw @"
-W $InstallDir nie ma Zapqio.Runner.exe. Ten skrypt dokłada moduł Nexo do zainstalowanego runnera - najpierw
-zainstaluj runner (https://github.com/zapqio/dotnet-runner, install.ps1), a jeśli jest w innym katalogu,
-podaj go w -InstallDir.
-"@
+    throw (Get-InstallText 'MissingRunner' @($InstallDir))
 }
 
 # Sfera i pozostałe biblioteki InsERT-a są obfuskowane i loader .NET 9+ je odrzuca - moduł na runnerze
@@ -241,11 +493,7 @@ $runtimeConfigPath = Join-Path $InstallDir 'Zapqio.Runner.runtimeconfig.json'
 if (Test-Path $runtimeConfigPath) {
     $tfm = (Get-Content -Path $runtimeConfigPath -Raw | ConvertFrom-Json).runtimeOptions.tfm
     if ($tfm -and $tfm -notlike 'net8.*') {
-        throw @"
-Runner w $InstallDir jest zbudowany na $tfm, a moduły Nexo działają tylko na .NET 8 (biblioteki InsERT-a nie ładują
-się na .NET 9+). Zainstaluj ponownie wariant .NET 8 - install.ps1 runnera bez -Net10 aktualizuje instalację w miejscu,
-zachowując konfigurację i moduły - i uruchom ten skrypt jeszcze raz.
-"@
+        throw (Get-InstallText 'WrongRuntime' @($InstallDir, $tfm))
     }
 }
 
@@ -256,7 +504,7 @@ if (-not (Test-Path $modulesDir)) { New-Item -ItemType Directory -Path $modulesD
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if (-not $service) {
-    Write-Warning "Usługi $ServiceName nie ma (runner uruchamiany z konsoli?). Paczki zostaną wgrane, restart zrób sam."
+    Write-Warning (Get-InstallText 'NoService' @($ServiceName))
     $NoRestart = $true
 }
 $serviceAccount = if ($service) { (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName } else { $null }
@@ -277,7 +525,7 @@ if (Test-Path $appsettingsPath) {
 $config = $null
 if (Test-Path $configPath) {
     try { $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json }
-    catch { throw "Nie udało się sparsować ${configPath}: $($_.Exception.Message). Popraw albo usuń plik i uruchom skrypt ponownie." }
+    catch { throw (Get-InstallText 'InvalidConfig' @($configPath, $_.Exception.Message)) }
 }
 if (-not $config) { $config = [pscustomobject]@{} }
 $connect = $config.PSObject.Properties['Connect']
@@ -310,31 +558,31 @@ while ($true) {
     if ($interactive -and ($missing.Count -gt 0 -or $attempt -gt 1)) {
         try {
             Write-Host ''
-            Write-Host 'Dane połączenia z Subiektem nexo (ten sam serwer SQL i baza podmiotu, do których łączy się Subiekt):'
-            $server = Read-Value 'Serwer SQL, np. SERWER\INSERTNEXO' $server -Required
-            $answer = Read-Value 'Użytkownik SQL, np. sa (Enter = uwierzytelnianie Windows kontem usługi runnera)' $(if ($integrated) { '' } else { $sqlUser })
+            Write-Host (Get-InstallText 'ConnectionPrompt')
+            $server = Read-Value (Get-InstallText 'ServerPrompt') $server -Required
+            $answer = Read-Value (Get-InstallText 'SqlUserPrompt') $(if ($integrated) { '' } else { $sqlUser })
             if ($answer) {
                 $integrated = $false
                 $sqlUser = $answer
-                $sqlPassword = Read-Value "Hasło SQL użytkownika $sqlUser" $sqlPassword -Secret
+                $sqlPassword = Read-Value (Get-InstallText 'SqlPasswordPrompt' @($sqlUser)) $sqlPassword -Secret
             } else {
                 $integrated = $true
                 $sqlUser = ''
                 $sqlPassword = ''
-                Write-Warning "Do SQL połączy się konto usługi ($serviceAccount) - musi mieć dostęp do bazy podmiotu. Ten skrypt testuje połączenie kontem $env:USERDOMAIN\$env:USERNAME."
+                Write-Warning (Get-InstallText 'WindowsAccount' @($serviceAccount, "$env:USERDOMAIN\$env:USERNAME"))
             }
             if (-not $database) {
                 # Lista baz z serwera jako podpowiedź - nazwa bazy podmiotu bywa nieoczywista
                 try {
                     $names = Get-SqlDatabases (New-SqlConnectionString $server 'master' $integrated $sqlUser $sqlPassword)
-                    if ($names.Count -gt 0) { Write-Host "  Bazy na ${server}: $($names -join ', ')" }
+                    if ($names.Count -gt 0) { Write-Host (Get-InstallText 'DatabaseList' @($server, ($names -join ', '))) }
                 } catch {
-                    Write-Warning "Nie udało się połączyć z ${server}: $($_.Exception.Message)"
+                    Write-Warning (Get-InstallText 'ServerConnectionFailed' @($server, $_.Exception.Message))
                 }
             }
-            $database = Read-Value 'Baza podmiotu, np. Nexo_Firma' $database -Required
-            $operator = Read-Value 'Operator Subiekta (login z okna logowania), np. Szef' $operator -Required
-            $operatorPassword = Read-Value "Hasło operatora $operator" $operatorPassword -Secret
+            $database = Read-Value (Get-InstallText 'DatabasePrompt') $database -Required
+            $operator = Read-Value (Get-InstallText 'OperatorPrompt') $operator -Required
+            $operatorPassword = Read-Value (Get-InstallText 'OperatorPasswordPrompt' @($operator)) $operatorPassword -Secret
         } catch {
             # sesja bez konsoli - niżej czytelny błąd zamiast pętli
             $interactive = $false
@@ -347,24 +595,24 @@ while ($true) {
     if (-not $integrated -and -not $sqlUser) { $missing += 'DatabaseUser' }
     if (-not $operator) { $missing += 'UserName' }
     if ($missing.Count -gt 0) {
-        throw "Brak danych połączenia: $($missing -join ', '). Sesja bez konsoli - podaj je parametrami (-DatabaseServer, -DatabaseName, -DatabaseUser/-DatabasePassword albo -WindowsLogin, -UserName, -UserPassword)."
+        throw (Get-InstallText 'MissingConnection' @(($missing -join ', ')))
     }
 
     # --- 3. Test połączenia i wersja Subiekta ---------------------------------------
 
-    Write-Host "==> Sprawdzam połączenie z bazą $database na $server..."
+    Write-Host (Get-InstallText 'CheckingSql' @($database, $server))
     $connectionString = New-SqlConnectionString $server $database $integrated $sqlUser $sqlPassword
     try {
         [void](Invoke-SqlScalar $connectionString 'SELECT 1')
-        Write-Host '==> Połączenie z SQL działa.'
+        Write-Host (Get-InstallText 'SqlReady')
     } catch {
         $reason = $_.Exception.Message
         if ($interactive) {
-            Write-Warning "Połączenie nie powiodło się: $reason"
-            Write-Host 'Popraw dane (Enter zostawia wartość w nawiasie).'
+            Write-Warning (Get-InstallText 'ConnectionFailed' @($reason))
+            Write-Host (Get-InstallText 'CorrectSettings')
             continue
         }
-        throw "Połączenie z bazą $database na $server nie powiodło się: $reason"
+        throw (Get-InstallText 'SqlFailed' @($database, $server, $reason))
     }
 
     # Wersję z bazy czytamy zawsze, gdy połączenie działa: przy -SubiektVersion / -SdkDir tylko do porównania.
@@ -374,23 +622,23 @@ while ($true) {
             $value = [string](Invoke-SqlScalar $connectionString $q.Query)
             if (Get-ShortVersion $value) {
                 $dbVersion = $value
-                Write-Host "==> Wersja Subiekta z bazy: $dbVersion ($($q.Source))"
+                Write-Host (Get-InstallText 'DatabaseVersion' @($dbVersion, $q.Source))
                 break
             }
-            Write-Verbose "Zapytanie o wersję ($($q.Source)) zwróciło '$value' - to nie jest numer wersji."
+            Write-Verbose (Get-InstallText 'InvalidVersionResult' @($q.Source, $value))
         } catch {
-            Write-Verbose "Zapytanie o wersję ($($q.Source)) nie powiodło się: $($_.Exception.Message)"
+            Write-Verbose (Get-InstallText 'VersionQueryFailed' @($q.Source, $_.Exception.Message))
         }
     }
     if (-not $dbVersion) {
-        Write-Warning 'Nie udało się odczytać wersji Subiekta z bazy (uruchom z -Verbose, żeby zobaczyć przyczyny).'
+        Write-Warning (Get-InstallText 'NoDatabaseVersion')
     }
     break
 }
 
 if ($SubiektVersion) {
     $targetVersion = Get-ShortVersion $SubiektVersion
-    if (-not $targetVersion) { throw "-SubiektVersion ma mieć trzy człony, np. 61.1.1 (podano: $SubiektVersion)" }
+    if (-not $targetVersion) { throw (Get-InstallText 'InvalidVersion' @($SubiektVersion)) }
 } elseif ($SdkDir) {
     $targetVersion = $null   # wersję wyznacza gotowe SDK, sprawdzi ją update-nexo-sdk.ps1
 } elseif ($dbVersion) {
@@ -400,14 +648,14 @@ if ($SubiektVersion) {
     if ($interactive) {
         try {
             do {
-                $answer = (Read-Host 'Wersja Subiekta z "Pomoc > O programie", np. 61.1.1').Trim()
+                $answer = (Read-Host (Get-InstallText 'VersionPrompt')).Trim()
                 $targetVersion = Get-ShortVersion $answer
-                if (-not $targetVersion) { Write-Warning 'Podaj wersję z trzema członami, np. 61.1.1.' }
+                if (-not $targetVersion) { Write-Warning (Get-InstallText 'VersionExample') }
             } while (-not $targetVersion)
         } catch { }
     }
     if (-not $targetVersion) {
-        throw 'Nie znam wersji Subiekta - podaj ją w -SubiektVersion (trzy człony, np. 61.1.1; w Subiekcie: Pomoc > O programie).'
+        throw (Get-InstallText 'MissingVersion')
     }
 }
 
@@ -420,7 +668,7 @@ if (-not (Test-Path $configDir)) {
     $grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')  # SYSTEM, Administratorzy
     if ($serviceAccount -and $serviceAccount -ne 'LocalSystem') { $grants += "${serviceAccount}:(OI)(CI)M" }
     & icacls $configDir /inheritance:r /grant:r $grants | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls na $configDir zakończyło się kodem $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw (Get-InstallText 'AclFailed' @($configDir, $LASTEXITCODE)) }
 }
 
 $values = [ordered]@{
@@ -437,11 +685,11 @@ foreach ($key in $values.Keys) {
 }
 $config | Add-Member -NotePropertyName 'Connect' -NotePropertyValue $connect -Force
 Format-Json ($config | ConvertTo-Json -Depth 10) | Set-Content -Path $configPath -Encoding UTF8
-Write-Host "==> Zapisano sekcję Connect w $configPath."
+Write-Host (Get-InstallText 'ConfigSaved' @($configPath))
 
 $legacyConfig = Join-Path $InstallDir $configFileName
 if (Test-Path $legacyConfig) {
-    Write-Warning "Obok binarki leży stary $configFileName - moduł czyta już tylko $configPath, ten plik można usunąć."
+    Write-Warning (Get-InstallText 'LegacyConfig' @($configFileName, $configPath))
 }
 
 $tempDir = Join-Path $env:TEMP ("zapqio-nexo-install-" + [guid]::NewGuid())
@@ -452,19 +700,19 @@ try {
 
     $zipPath = Join-Path $tempDir $moduleZipName
     if ($PackagePath) {
-        if (-not (Test-Path $PackagePath)) { throw "Nie ma pliku $PackagePath (-PackagePath)." }
-        Write-Host "==> Biorę paczkę z $PackagePath"
+        if (-not (Test-Path $PackagePath)) { throw (Get-InstallText 'MissingPackage' @($PackagePath)) }
+        Write-Host (Get-InstallText 'LocalPackage' @($PackagePath))
         Copy-Item -Path $PackagePath -Destination $zipPath
     } else {
         $zipUrl = if ($Version) { "https://github.com/$repo/releases/download/v$($Version -replace '^v', '')/$moduleZipName" }
                   else { "https://github.com/$repo/releases/latest/download/$moduleZipName" }
-        Write-Host "==> Pobieram $zipUrl"
+        Write-Host (Get-InstallText 'Downloading' @($zipUrl))
         $oldProgress = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'
         try {
             Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
         } catch {
-            throw "Nie udało się pobrać paczki ($($_.Exception.Message)). Release'y: https://github.com/$repo/releases"
+            throw (Get-InstallText 'DownloadFailed' @($_.Exception.Message, $repo))
         } finally {
             $ProgressPreference = $oldProgress
         }
@@ -475,7 +723,7 @@ try {
     $moduleDll = Join-Path $extractDir 'Nexo.Connection.dll'
     $updateScriptSource = Join-Path $extractDir $updateScriptName
     if (-not (Test-Path $moduleDll) -or -not (Test-Path $updateScriptSource)) {
-        throw "W paczce nie ma Nexo.Connection.dll albo $updateScriptName - to nie wygląda na $moduleZipName."
+        throw (Get-InstallText 'InvalidPackage' @($updateScriptName, $moduleZipName))
     }
     $moduleVersion = (Get-Item $moduleDll).VersionInfo.ProductVersion -replace '\+.*$', ''
 
@@ -483,13 +731,13 @@ try {
     # Skrypt podmiany SDK leży w katalogu runnera (stąd uruchamia go NexoClient po aktualizacji Subiekta i admin ręcznie)
     $updateScript = Join-Path $InstallDir $updateScriptName
     Copy-Item -Path $updateScriptSource -Destination $updateScript -Force
-    Write-Host "==> Nexo.Connection $moduleVersion w $modulesDir."
+    Write-Host (Get-InstallText 'ConnectionInstalled' @($moduleVersion, $modulesDir))
 
     # Paczka sprzed podziału modułu niesie własny NexoClient i SDK - dwa komplety w Modules\ to konflikt.
     $legacyZip = Join-Path $modulesDir 'Nexo.zip'
     if (Test-Path $legacyZip) {
         Move-Item -Path $legacyZip -Destination "$legacyZip.old" -Force
-        Write-Warning "Stary Nexo.zip (sprzed podziału na Nexo.Sdk + Nexo.Connection) przemianowany na Nexo.zip.old - runner go pominie; usuń, gdy nowe paczki zadziałają."
+        Write-Warning (Get-InstallText 'LegacyZip')
     }
 
     # --- 6. SDK InsERT nexo ------------------------------------------------------------------
@@ -502,60 +750,60 @@ try {
     }
 
     if ($targetVersion -and $installedSdk -and (Get-ShortVersion $installedSdk) -eq $targetVersion) {
-        Write-Host "==> SDK $installedSdk już jest w $sdkZip - bez podmiany."
+        Write-Host (Get-InstallText 'SdkPresent' @($installedSdk, $sdkZip))
     } else {
         $scriptArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $updateScript,
                         '-RunnerDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart')
         if ($SdkDir) {
-            Write-Host "==> Pakuję SDK z $SdkDir do $sdkZip..."
+            Write-Host (Get-InstallText 'PackingSdk' @($SdkDir, $sdkZip))
             $scriptArgs += @('-SdkDir', $SdkDir)
         } else {
-            Write-Host "==> Pobieram SDK InsERT nexo $targetVersion (ok. 500 MB) i pakuję do $sdkZip..."
+            Write-Host (Get-InstallText 'DownloadingSdk' @($targetVersion, $sdkZip))
             $scriptArgs += @('-Version', $targetVersion)
         }
+        $scriptArgs += @(Get-InstallerLanguageArguments $updateScript)
         & powershell.exe @scriptArgs
         if ($LASTEXITCODE -ne 0) {
-            throw "update-nexo-sdk.ps1 zakończył się kodem $LASTEXITCODE - SDK nie zostało zainstalowane. Popraw przyczynę z komunikatu wyżej i uruchom ponownie: $updateScript -Version $targetVersion -RunnerDir $InstallDir"
+            throw (Get-InstallText 'SdkSetupFailed' @($LASTEXITCODE, $updateScript, $targetVersion, $InstallDir))
         }
         try { $installedSdk = [string](Get-Content -Path $sdkStatePath -Raw | ConvertFrom-Json).version } catch { }
     }
     if ($dbVersion -and $installedSdk -and (Get-ShortVersion $installedSdk) -ne (Get-ShortVersion $dbVersion)) {
-        Write-Warning "SDK $installedSdk w $sdkZip nie zgadza się z wersją Subiekta z bazy ($dbVersion) - Sfera odrzuci połączenie. Uruchom: $updateScript -Version $(Get-ShortVersion $dbVersion) -RunnerDir $InstallDir"
+        Write-Warning (Get-InstallText 'SdkMismatch' @($installedSdk, $sdkZip, $dbVersion, $updateScript, (Get-ShortVersion $dbVersion), $InstallDir))
     }
 
-    # Opcjonalne środowisko kompilacji; dane SQL i SDK runtime są już przygotowane.
-    if ($BuildTools) {
-        $buildScript = Join-Path $tempDir 'install-nexo-build.ps1'
-        $localBuildScript = $null
-        if ($PSScriptRoot) {
-            $localBuildScript = Join-Path $PSScriptRoot 'install-nexo-build.ps1'
-        }
-
-        if ($localBuildScript -and (Test-Path -LiteralPath $localBuildScript)) {
-            Copy-Item -LiteralPath $localBuildScript -Destination $buildScript
-        }
-        else {
-            Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1' -OutFile $buildScript -UseBasicParsing
-        }
-
-        $buildArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $buildScript,
-                       '-InstallDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart')
-        if ($ConnectionPackagePath) {
-            $buildArgs += @('-ConnectionPackagePath', $ConnectionPackagePath)
-        }
-
-        & powershell.exe @buildArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Przygotowanie budowania modułów nie powiodło się. Popraw błąd i uruchom install-nexo-build.ps1.'
-        }
+    # --- 7. Środowisko budowania modułów -----------------------------------------------------
+    $buildScript = Join-Path $tempDir 'install-nexo-build.ps1'
+    $localBuildScript = $null
+    if ($PSScriptRoot) {
+        $localBuildScript = Join-Path $PSScriptRoot 'install-nexo-build.ps1'
     }
 
-    # --- 7. Restart i sprawdzenie w logu ---------------------------------------------------------
+    if ($localBuildScript -and (Test-Path -LiteralPath $localBuildScript)) {
+        Copy-Item -LiteralPath $localBuildScript -Destination $buildScript
+    }
+    else {
+        Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1' -OutFile $buildScript -UseBasicParsing
+    }
+
+    $buildArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $buildScript,
+                   '-InstallDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart')
+    if ($ConnectionPackagePath) {
+        $buildArgs += @('-ConnectionPackagePath', $ConnectionPackagePath)
+    }
+
+    $buildArgs += @(Get-InstallerLanguageArguments $buildScript)
+    & powershell.exe @buildArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw (Get-InstallText 'BuildSetupFailed')
+    }
+
+    # --- 8. Restart i sprawdzenie w logu ---------------------------------------------------------
 
     $methodSeen = $false
     $problems = @()
     if ($NoRestart) {
-        Write-Host "==> Bez restartu (-NoRestart). Runner wczyta paczki przy następnym starcie: Restart-Service $ServiceName"
+        Write-Host (Get-InstallText 'NoRestart' @($ServiceName))
     } else {
         # Zapamiętaj, dokąd log sięgał przed restartem - czytamy tylko nowe wpisy
         $preLogFile = $null
@@ -566,11 +814,11 @@ try {
             if ($preLogFile) { $preLogOffset = $preLogFile.Length }
         }
 
-        Write-Host "==> Restartuję usługę $ServiceName..."
+        Write-Host (Get-InstallText 'Restarting' @($ServiceName))
         Restart-Service -Name $ServiceName
 
         if ($logsDir) {
-            Write-Host '==> Czekam, aż runner ogłosi metodę "Nexo: Who am I" (do 60 s)...'
+            Write-Host (Get-InstallText 'WaitingMethod')
             $deadline = (Get-Date).AddSeconds(60)
             while ((Get-Date) -lt $deadline) {
                 Start-Sleep -Seconds 2
@@ -596,29 +844,29 @@ try {
                 if ($newLog -match 'Wysyłam Info') { break }
             }
             if ($methodSeen) {
-                Write-Host '==> Runner ogłosił metodę "Nexo: Who am I".'
+                Write-Host (Get-InstallText 'MethodReady')
             } else {
-                Write-Warning "W ciągu 60 s log nie potwierdził metody - zajrzyj do $logsDir (szukaj: Nexo.Sdk, Nexo.Connection, 'nie została utworzona')."
+                Write-Warning (Get-InstallText 'MethodUnconfirmed' @($logsDir))
             }
             foreach ($p in $problems) { Write-Warning $p }
         } else {
-            Write-Host '==> Logi plikowe wyłączone - listę metod sprawdź w panelu Web.'
+            Write-Host (Get-InstallText 'FileLogsDisabled')
         }
     }
 
-    # --- 8. Podsumowanie ---------------------------------------------------------------------------
+    # --- 9. Podsumowanie ---------------------------------------------------------------------------
 
     Write-Host ''
-    Write-Host "Moduł Nexo na runnerze $ServiceName$(if ($service) { " ($((Get-Service -Name $ServiceName).Status))" })."
-    Write-Host "  Nexo.Connection: $moduleVersion ($(Join-Path $modulesDir $moduleZipName))"
-    Write-Host "  SDK InsERT nexo: $(if ($installedSdk) { $installedSdk } else { '?' }) ($sdkZip)"
-    Write-Host "  Subiekt: $server, baza $database, operator $operator$(if ($integrated) { ', SQL: uwierzytelnianie Windows' } else { ", SQL: $sqlUser" })"
-    Write-Host "  Konfiguracja: $configPath"
-    Write-Host "  Skrypt podmiany SDK: $updateScript (po aktualizacji Subiekta moduł uruchamia go sam)"
+    Write-Host (Get-InstallText 'Summary' @($ServiceName, $(if ($service) { " ($((Get-Service -Name $ServiceName).Status))" })))
+    Write-Host (Get-InstallText 'SummaryConnection' @($moduleVersion, (Join-Path $modulesDir $moduleZipName)))
+    Write-Host (Get-InstallText 'SummarySdk' @($(if ($installedSdk) { $installedSdk } else { '?' }), $sdkZip))
+    Write-Host (Get-InstallText 'SummarySubiekt' @($server, $database, $operator, $(if ($integrated) { Get-InstallText 'WindowsAuthentication' } else { $sqlUser })))
+    Write-Host (Get-InstallText 'SummaryConfig' @($configPath))
+    Write-Host (Get-InstallText 'SummaryUpdate' @($updateScript))
     Write-Host ''
-    Write-Host 'Sprawdzenie: w panelu Web uruchom na tym runnerze metodę "Nexo: Who am I" - zwraca operatora oraz wersję'
-    Write-Host 'i paczkę SDK. Błąd zadania mówi wprost, co poprawić (SDK, dane SQL albo hasło operatora).'
-    Write-Host "Paczki z metodami (np. Nexo.Invoices.zip) wrzucaj do $modulesDir i restartuj usługę."
+    Write-Host (Get-InstallText 'Verification')
+    Write-Host (Get-InstallText 'Troubleshooting')
+    Write-Host (Get-InstallText 'InstallingModules' @($modulesDir))
 } finally {
     # Remove-Item wykrzacza się na ścieżkach ze skróconą nazwą 8.3 (np. C:\Users\UKASZ~1),
     # a taką potrafi mieć %TEMP% - .NET usuwa je bez problemu

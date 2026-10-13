@@ -42,7 +42,7 @@ $runtimeHash = (Get-FileHash -LiteralPath $runtimeDll).Hash
 
 function Invoke-Setup([string]$Name, [string]$LocalPackage = '', [switch]$ExpectFailure) {
     $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $setup,
-                   '-InstallDir', $installDir, '-ServiceName', $serviceName, '-NoRestart')
+                   '-InstallDir', $installDir, '-ServiceName', $serviceName, '-NoRestart', '-Language', 'en')
     if ($LocalPackage) {
         $arguments += @('-ConnectionPackagePath', $LocalPackage)
     }
@@ -145,7 +145,7 @@ finally {
 }
 
 $failure = Invoke-Setup 'mismatched-dll' $badPackage -ExpectFailure
-if ($failure -notmatch 'DLL w NuGet rozni sie' -or (Get-FileHash -LiteralPath $configPath).Hash -ne $configHash) {
+if ($failure -notmatch 'The NuGet DLL differs' -or (Get-FileHash -LiteralPath $configPath).Hash -ne $configHash) {
     throw 'A mismatched DLL must be rejected before modifying the build configuration.'
 }
 

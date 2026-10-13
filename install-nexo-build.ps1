@@ -3,14 +3,16 @@
 .SYNOPSIS
     Przygotowuje zainstalowanego runnera do budowania modulow nexo z repozytoriow Weba.
 .DESCRIPTION
-    Uruchom po install-nexo.ps1. Wykorzystuje Modules\Nexo.Sdk.zip, pobiera NuGet Connection
-    w wersji zainstalowanego modulu z nuget.org. Module.Core przywraca z nuget.org.
+    Uruchamiany automatycznie przez install-nexo.ps1. Mozna go tez uruchomic osobno, aby odswiezyc
+    srodowisko budowania. Wykorzystuje Modules\Nexo.Sdk.zip, pobiera NuGet Connection w wersji
+    zainstalowanego modulu z nuget.org. Module.Core przywraca z nuget.org.
     Konfiguruje Deployments i sprawdza kompilacje.
     W razie braku SDK .NET instaluje systemowe SDK 8 x64. Nie zmienia danych SQL.
-    Tryb CI w Webie nie wymaga uruchamiania tego skryptu na serwerze.
 .PARAMETER ConnectionPackagePath
     Lokalny plik Zapqio.Nexo.Connection.<wersja>.nupkg zamiast pobierania z nuget.org.
     Musi zawierac DLL zgodna z zainstalowanym ZIP-em. Core nadal pochodzi z nuget.org.
+.PARAMETER Language
+    Jezyk komunikatow: pl, en albo de. Domyslnie pl; install-nexo.ps1 przekazuje wybrany jezyk.
 .PARAMETER NoRestart
     Nie restartuje uslugi. Nowe ustawienia srodowiska zadzialaja po jej restarcie.
 #>
@@ -19,17 +21,114 @@ param(
     [string]$InstallDir = 'C:\zapqio\runner',
     [string]$ServiceName = 'ZapqioRunner',
     [string]$ConnectionPackagePath,
-    [switch]$NoRestart
+    [switch]$NoRestart,
+    [ValidateSet('pl', 'en', 'de')][string]$Language = 'pl'
 )
 
 $ErrorActionPreference = 'Stop'
+
+$messages = @{
+    pl = @{
+        MissingEntry = 'W paczce brakuje {0}.'
+        InvalidXml = 'Nieprawidłowy element główny w {0}.'
+        DotnetAdmin = 'Brak systemowego SDK .NET 8 lub nowszego. Uruchom skrypt jako administrator, aby je zainstalować.'
+        DownloadDotnet = '==> Pobieram instalator .NET SDK 8 x64...'
+        MissingDotnetAsset = 'Nie udało się znaleźć instalatora SDK w metadanych Microsoft.'
+        DotnetHash = 'Suma SHA512 instalatora .NET nie zgadza się z metadanymi Microsoft.'
+        DotnetExit = 'Instalator SDK .NET zakończył się kodem {0}.'
+        DotnetUnavailable = 'SDK .NET nie jest dostępne po instalacji. Sprawdź wynik instalatora.'
+        MissingRuntime = 'Brak {0} w {1}. Najpierw uruchom install-nexo.ps1.'
+        ServiceAdmin = 'Uruchom skrypt jako administrator: konfiguracja konta usługi wymaga podwyższonych uprawnień.'
+        MissingConnection = 'Paczka Connection nie zawiera Nexo.Connection.dll.'
+        InvalidConnectionVersion = 'Nieprawidłowa wersja Connection: {0}.'
+        DownloadConnection = '==> Pobieram NuGet Connection {0}...'
+        ConnectionDownloadFailed = 'Nie można pobrać Zapqio.Nexo.Connection {0} z nuget.org. Wymagana jest dokładnie wersja zainstalowanego ZIP-a. Sprawdź publikację tej wersji lub podaj -ConnectionPackagePath. Błąd: {1}'
+        ConnectionVersionMismatch = 'NuGet musi zawierać Zapqio.Nexo.Connection {0}, zgodny z zainstalowanym modułem.'
+        MissingReference = 'NuGet nie zawiera Nexo.Connection.dll dla net8.0-windows7.0.'
+        ConnectionDllMismatch = 'DLL w NuGet różni się od zainstalowanego Connection. Pobierz ZIP i NuGet z tego samego wydania.'
+        MissingSdk = 'Nexo.Sdk.zip nie zawiera InsERT.Moria.Sfera.dll w katalogu głównym.'
+        BuildSdk = '==> SDK nexo do kompilacji: {0} (z zainstalowanego Nexo.Sdk.zip).'
+        ProbeFailed = 'Próba kompilacji nie powiodła się. Popraw błąd widoczny powyżej i uruchom skrypt ponownie.'
+        RestoredDllMismatch = 'Przywrócona paczka Connection nie odpowiada DLL w zainstalowanym ZIP-ie.'
+        BuildPermissions = 'Nie udało się nadać kontu usługi praw do katalogu Build.'
+        DeploymentPermissions = 'Nie udało się nadać kontu usługi praw do katalogu Deployments.'
+        NoService = 'Nie znaleziono usługi {0}. Przygotowano pliki; uprawnienia i środowisko usługi nie zostały zmienione.'
+        BuildReady = '==> Kompilacja sprawdzona. W Webie możesz wybrać budowanie na runnerze {0}.'
+        RestartRequired = 'Uruchom ponownie runnera, aby wczytał środowisko budowania.'
+    }
+    en = @{
+        MissingEntry = 'The package is missing {0}.'
+        InvalidXml = 'Invalid root element in {0}.'
+        DotnetAdmin = 'The system .NET SDK 8 or later is missing. Run this script as administrator to install it.'
+        DownloadDotnet = '==> Downloading the .NET SDK 8 x64 installer...'
+        MissingDotnetAsset = 'Could not find the SDK installer in Microsoft release metadata.'
+        DotnetHash = 'The .NET installer SHA512 checksum does not match Microsoft metadata.'
+        DotnetExit = 'The .NET SDK installer exited with code {0}.'
+        DotnetUnavailable = 'The .NET SDK is unavailable after installation. Check the installer result.'
+        MissingRuntime = '{0} is missing in {1}. Run install-nexo.ps1 first.'
+        ServiceAdmin = 'Run this script as administrator: configuring the service account requires elevated permissions.'
+        MissingConnection = 'The Connection package does not contain Nexo.Connection.dll.'
+        InvalidConnectionVersion = 'Invalid Connection version: {0}.'
+        DownloadConnection = '==> Downloading Connection NuGet package {0}...'
+        ConnectionDownloadFailed = 'Cannot download Zapqio.Nexo.Connection {0} from nuget.org. It must match the installed ZIP version exactly. Check that this version is published or provide -ConnectionPackagePath. Error: {1}'
+        ConnectionVersionMismatch = 'The NuGet package must contain Zapqio.Nexo.Connection {0}, matching the installed module.'
+        MissingReference = 'The NuGet package does not contain Nexo.Connection.dll for net8.0-windows7.0.'
+        ConnectionDllMismatch = 'The NuGet DLL differs from the installed Connection. Download the ZIP and NuGet package from the same release.'
+        MissingSdk = 'Nexo.Sdk.zip does not contain InsERT.Moria.Sfera.dll at its root.'
+        BuildSdk = '==> nexo SDK for builds: {0} (from the installed Nexo.Sdk.zip).'
+        ProbeFailed = 'The test build failed. Fix the error above and run this script again.'
+        RestoredDllMismatch = 'The restored Connection package does not match the DLL in the installed ZIP.'
+        BuildPermissions = 'Could not grant the service account permissions to the Build directory.'
+        DeploymentPermissions = 'Could not grant the service account permissions to the Deployments directory.'
+        NoService = 'Service {0} was not found. Files are ready; service permissions and environment were not changed.'
+        BuildReady = '==> Test build passed. You can now select builds on runner {0} in the Web panel.'
+        RestartRequired = 'Restart the runner to load the build environment.'
+    }
+    de = @{
+        MissingEntry = 'Im Paket fehlt {0}.'
+        InvalidXml = 'Ungültiges Wurzelelement in {0}.'
+        DotnetAdmin = 'Das systemweite .NET SDK 8 oder neuer fehlt. Führen Sie dieses Skript als Administrator aus, um es zu installieren.'
+        DownloadDotnet = '==> Das Installationsprogramm für .NET SDK 8 x64 wird heruntergeladen...'
+        MissingDotnetAsset = 'Das SDK-Installationsprogramm wurde in den Microsoft-Releasemetadaten nicht gefunden.'
+        DotnetHash = 'Die SHA512-Prüfsumme des .NET-Installationsprogramms stimmt nicht mit den Microsoft-Metadaten überein.'
+        DotnetExit = 'Das .NET SDK-Installationsprogramm wurde mit Code {0} beendet.'
+        DotnetUnavailable = 'Das .NET SDK ist nach der Installation nicht verfügbar. Prüfen Sie das Installationsergebnis.'
+        MissingRuntime = '{0} fehlt in {1}. Führen Sie zuerst install-nexo.ps1 aus.'
+        ServiceAdmin = 'Führen Sie dieses Skript als Administrator aus: Die Konfiguration des Dienstkontos erfordert erhöhte Rechte.'
+        MissingConnection = 'Das Connection-Paket enthält keine Nexo.Connection.dll.'
+        InvalidConnectionVersion = 'Ungültige Connection-Version: {0}.'
+        DownloadConnection = '==> Das Connection-NuGet-Paket {0} wird heruntergeladen...'
+        ConnectionDownloadFailed = 'Zapqio.Nexo.Connection {0} kann nicht von nuget.org heruntergeladen werden. Die Version muss genau dem installierten ZIP entsprechen. Prüfen Sie, ob diese Version veröffentlicht wurde, oder geben Sie -ConnectionPackagePath an. Fehler: {1}'
+        ConnectionVersionMismatch = 'Das NuGet-Paket muss Zapqio.Nexo.Connection {0} enthalten, passend zum installierten Modul.'
+        MissingReference = 'Das NuGet-Paket enthält keine Nexo.Connection.dll für net8.0-windows7.0.'
+        ConnectionDllMismatch = 'Die DLL im NuGet-Paket unterscheidet sich vom installierten Connection-Modul. Laden Sie ZIP und NuGet-Paket aus derselben Veröffentlichung herunter.'
+        MissingSdk = 'Nexo.Sdk.zip enthält keine InsERT.Moria.Sfera.dll im Stammverzeichnis.'
+        BuildSdk = '==> nexo SDK zum Kompilieren: {0} (aus dem installierten Nexo.Sdk.zip).'
+        ProbeFailed = 'Die Testkompilierung ist fehlgeschlagen. Beheben Sie den oben angezeigten Fehler und führen Sie das Skript erneut aus.'
+        RestoredDllMismatch = 'Das wiederhergestellte Connection-Paket stimmt nicht mit der DLL im installierten ZIP überein.'
+        BuildPermissions = 'Dem Dienstkonto konnten keine Rechte für das Verzeichnis Build erteilt werden.'
+        DeploymentPermissions = 'Dem Dienstkonto konnten keine Rechte für das Verzeichnis Deployments erteilt werden.'
+        NoService = 'Der Dienst {0} wurde nicht gefunden. Die Dateien sind vorbereitet; Dienstberechtigungen und -umgebung wurden nicht geändert.'
+        BuildReady = '==> Testkompilierung erfolgreich. Im Webpanel können Sie nun das Kompilieren auf Runner {0} auswählen.'
+        RestartRequired = 'Starten Sie den Runner neu, damit die Build-Umgebung geladen wird.'
+    }
+}
+
+# Keep translations inside the script: it can also be run directly from a downloaded scriptblock.
+function Get-InstallText {
+    param([string]$Key, [object[]]$Values = @())
+    $template = $messages[$Language][$Key]
+    if ($null -eq $template) { throw "Missing installer translation: $Language/$Key" }
+    return [string]::Format([Globalization.CultureInfo]::GetCultureInfo($Language), $template, $Values)
+}
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Read-ZipText($Archive, [string]$Name) {
     $entry = $Archive.GetEntry($Name)
     if (-not $entry) {
-        throw "W paczce brakuje $Name."
+        throw (Get-InstallText 'MissingEntry' @($Name))
     }
 
     $reader = New-Object IO.StreamReader($entry.Open())
@@ -47,7 +146,7 @@ function Read-Xml([string]$Path, [string]$RootName) {
     if (Test-Path -LiteralPath $Path) {
         $xml.Load($Path)
         if ($xml.DocumentElement.Name -ne $RootName) {
-            throw "Nieprawidlowy element glowny w $Path."
+            throw (Get-InstallText 'InvalidXml' @($Path))
         }
     }
     else {
@@ -108,31 +207,31 @@ function Get-BuildDotnet([string]$Work) {
 
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Brak systemowego SDK .NET 8 lub nowszego. Uruchom skrypt jako administrator, aby je zainstalowac.'
+        throw (Get-InstallText 'DotnetAdmin')
     }
 
-    Write-Host '==> Pobieram instalator .NET SDK 8 x64...'
+    Write-Host (Get-InstallText 'DownloadDotnet')
     $metadata = Invoke-RestMethod 'https://builds.dotnet.microsoft.com/dotnet/release-metadata/8.0/releases.json'
     $release = $metadata.releases | Where-Object { $_.sdk.version -eq $metadata.'latest-sdk' } | Select-Object -First 1
     $asset = $release.sdk.files | Where-Object { $_.rid -eq 'win-x64' -and $_.name -like '*.exe' } | Select-Object -First 1
     if (-not $asset -or $asset.hash -notmatch '^[a-fA-F0-9]{128}$' -or $asset.url -notlike 'https://*') {
-        throw 'Nie udalo sie znalezc instalatora SDK w metadanych Microsoft.'
+        throw (Get-InstallText 'MissingDotnetAsset')
     }
 
     $installer = Join-Path $Work 'dotnet-sdk.exe'
     Invoke-WebRequest -Uri $asset.url -OutFile $installer -UseBasicParsing
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA512).Hash -ne $asset.hash) {
-        throw 'Suma SHA512 instalatora .NET nie zgadza sie z metadanymi Microsoft.'
+        throw (Get-InstallText 'DotnetHash')
     }
 
     $process = Start-Process -FilePath $installer -ArgumentList '/install', '/quiet', '/norestart' -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -notin 0, 3010) {
-        throw "Instalator SDK .NET zakonczyl sie kodem $($process.ExitCode)."
+        throw (Get-InstallText 'DotnetExit' @($process.ExitCode))
     }
 
     $sdks = @(& $dotnet --list-sdks)
     if ($LASTEXITCODE -ne 0 -or -not ($sdks | Where-Object { $_ -match '^8\.\d+\.\d+ ' })) {
-        throw 'SDK .NET nie jest dostepne po instalacji. Sprawdz wynik instalatora.'
+        throw (Get-InstallText 'DotnetUnavailable')
     }
 
     return $dotnet
@@ -142,7 +241,7 @@ $InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromP
 $modules = Join-Path $InstallDir 'Modules'
 foreach ($path in 'Zapqio.Runner.exe', 'Modules\Nexo.Connection.zip', 'Modules\Nexo.Sdk.zip') {
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $path))) {
-        throw "Brak $path w $InstallDir. Najpierw uruchom install-nexo.ps1."
+        throw (Get-InstallText 'MissingRuntime' @($path, $InstallDir))
     }
 }
 
@@ -150,7 +249,7 @@ $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($service) {
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Uruchom skrypt jako administrator: konfiguracja konta uslugi wymaga podwyzszonych uprawnien.'
+        throw (Get-InstallText 'ServiceAdmin')
     }
 }
 
@@ -169,7 +268,7 @@ try {
     try {
         $entry = $connectionZip.GetEntry('Nexo.Connection.dll')
         if (-not $entry) {
-            throw 'Paczka Connection nie zawiera Nexo.Connection.dll.'
+            throw (Get-InstallText 'MissingConnection')
         }
 
         $connectionDll = Join-Path $work 'Nexo.Connection.dll'
@@ -181,7 +280,7 @@ try {
 
     $connectionVersion = ([Diagnostics.FileVersionInfo]::GetVersionInfo($connectionDll).ProductVersion -split '\+')[0]
     if ($connectionVersion -notmatch '^\d+\.\d+\.\d+$') {
-        throw "Nieprawidlowa wersja Connection: $connectionVersion."
+        throw (Get-InstallText 'InvalidConnectionVersion' @($connectionVersion))
     }
 
     $packageName = "Zapqio.Nexo.Connection.$connectionVersion.nupkg"
@@ -190,13 +289,13 @@ try {
         Copy-Item -LiteralPath $ConnectionPackagePath -Destination $packagePath
     }
     else {
-        Write-Host "==> Pobieram NuGet Connection $connectionVersion..."
+        Write-Host (Get-InstallText 'DownloadConnection' @($connectionVersion))
         $packageUrl = "https://api.nuget.org/v3-flatcontainer/zapqio.nexo.connection/$connectionVersion/zapqio.nexo.connection.$connectionVersion.nupkg"
         try {
             Invoke-WebRequest -Uri $packageUrl -OutFile $packagePath -UseBasicParsing
         }
         catch {
-            throw "Nie mozna pobrac Zapqio.Nexo.Connection $connectionVersion z nuget.org. Wymagana jest dokladnie wersja zainstalowanego ZIP-a. Sprawdz publikacje tej wersji lub podaj -ConnectionPackagePath. Blad: $($_.Exception.Message)"
+            throw (Get-InstallText 'ConnectionDownloadFailed' @($connectionVersion, $_.Exception.Message))
         }
     }
 
@@ -204,20 +303,20 @@ try {
     try {
         [xml]$manifest = Read-ZipText $package 'Zapqio.Nexo.Connection.nuspec'
         if ($manifest.package.metadata.id -ne 'Zapqio.Nexo.Connection' -or $manifest.package.metadata.version -ne $connectionVersion) {
-            throw "NuGet musi zawierac Zapqio.Nexo.Connection $connectionVersion, zgodny z zainstalowanym modulem."
+            throw (Get-InstallText 'ConnectionVersionMismatch' @($connectionVersion))
         }
 
         [void](Read-ZipText $package 'build/Zapqio.Nexo.Connection.props')
         [void](Read-ZipText $package 'build/Zapqio.Nexo.Connection.targets')
         $reference = $package.GetEntry('lib/net8.0-windows7.0/Nexo.Connection.dll')
         if (-not $reference) {
-            throw 'NuGet nie zawiera Nexo.Connection.dll dla net8.0-windows7.0.'
+            throw (Get-InstallText 'MissingReference')
         }
 
         $referencePath = Join-Path $work 'reference.dll'
         [IO.Compression.ZipFileExtensions]::ExtractToFile($reference, $referencePath)
         if ((Get-FileHash -LiteralPath $referencePath).Hash -ne (Get-FileHash -LiteralPath $connectionDll).Hash) {
-            throw 'DLL w NuGet rozni sie od zainstalowanego Connection. Pobierz ZIP i NuGet z tego samego wydania.'
+            throw (Get-InstallText 'ConnectionDllMismatch')
         }
     }
     finally {
@@ -241,7 +340,7 @@ try {
     $sdkZip = [IO.Compression.ZipFile]::OpenRead($sdkZipPath)
     try {
         if (-not $sdkZip.GetEntry('InsERT.Moria.Sfera.dll')) {
-            throw 'Nexo.Sdk.zip nie zawiera InsERT.Moria.Sfera.dll w katalogu glownym.'
+            throw (Get-InstallText 'MissingSdk')
         }
 
         foreach ($entry in $sdkZip.Entries) {
@@ -256,7 +355,7 @@ try {
     }
 
     $sdkVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $sdkBin 'InsERT.Moria.Sfera.dll')).ProductVersion
-    Write-Host "==> SDK nexo do kompilacji: $sdkVersion (z zainstalowanego Nexo.Sdk.zip)."
+    Write-Host (Get-InstallText 'BuildSdk' @($sdkVersion))
     $dotnet = Get-BuildDotnet $work
     $configPath = Join-Path $deployments 'NuGet.Config'
     Write-BuildNuGetConfig -Path $configPath -PackageCache $packageCache -LocalSource $localSource
@@ -298,7 +397,7 @@ try {
     try {
         & $dotnet build 'Probe.csproj' -c Release --nologo -v quiet "-p:RestoreConfigFile=$configPath" "-p:RestorePackagesPath=$packageCache"
         if ($LASTEXITCODE -ne 0) {
-            throw 'Proba kompilacji nie powiodla sie. Popraw blad widoczny powyzej i uruchom skrypt ponownie.'
+            throw (Get-InstallText 'ProbeFailed')
         }
     }
     finally {
@@ -307,7 +406,7 @@ try {
 
     $restoredDll = Join-Path $packageCache "zapqio.nexo.connection\$connectionVersion\lib\net8.0-windows7.0\Nexo.Connection.dll"
     if (-not (Test-Path -LiteralPath $restoredDll) -or (Get-FileHash -LiteralPath $restoredDll).Hash -ne (Get-FileHash -LiteralPath $connectionDll).Hash) {
-        throw 'Przywrocona paczka Connection nie odpowiada DLL w zainstalowanym ZIP-ie.'
+        throw (Get-InstallText 'RestoredDllMismatch')
     }
 
     if ($service) {
@@ -316,12 +415,12 @@ try {
         if ($account -and $account -ne 'LocalSystem') {
             & icacls $build /grant "${account}:(OI)(CI)M" | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                throw 'Nie udalo sie nadac kontu uslugi praw do katalogu Build.'
+                throw (Get-InstallText 'BuildPermissions')
             }
 
             & icacls $deployments /grant "${account}:(OI)(CI)M" | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                throw 'Nie udalo sie nadac kontu uslugi praw do katalogu Deployments.'
+                throw (Get-InstallText 'DeploymentPermissions')
             }
         }
 
@@ -345,12 +444,12 @@ try {
         }
     }
     else {
-        Write-Warning "Nie znaleziono uslugi $ServiceName. Przygotowano pliki; uprawnienia i srodowisko uslugi nie zostaly zmienione."
+        Write-Warning (Get-InstallText 'NoService' @($ServiceName))
     }
 
-    Write-Host "==> Kompilacja sprawdzona. W Webie mozesz wybrac budowanie na runnerze $ServiceName."
+    Write-Host (Get-InstallText 'BuildReady' @($ServiceName))
     if ($NoRestart -or -not $service) {
-        Write-Host 'Uruchom ponownie runnera, aby wczytal srodowisko budowania.'
+        Write-Host (Get-InstallText 'RestartRequired')
     }
 }
 finally {

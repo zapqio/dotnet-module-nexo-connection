@@ -27,12 +27,28 @@ Wymagania:
 - [Zapqio Runner](https://github.com/zapqio/dotnet-runner) w wariancie .NET 8 (domyślnym w jego
   `install.ps1`) - biblioteki InsERT nie ładują się na .NET 9+,
 - PowerShell uruchomiony jako administrator,
-- dostęp do GitHuba (skrypt, paczka) i `ftp.insertcdn.pl` (SDK, ok. 500 MB).
+- dostęp do GitHuba (skrypty, paczka), `ftp.insertcdn.pl` (SDK, ok. 500 MB), nuget.org (zależności
+  budowania) i serwerów Microsoft (instalator SDK .NET, jeśli potrzebny).
 
 ```powershell
 $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo.ps1
 & ([scriptblock]::Create($s.TrimStart([char]0xFEFF)))
 ```
+
+Na początku wybierz język komunikatów i pytań: **Polski (`pl`)**, **English (`en`)** albo
+**Deutsch (`de`)**. Enter zatwierdza język systemu; dla systemów w innych językach domyślny jest
+angielski. Bez interaktywnej konsoli skrypt używa tej samej wartości domyślnej.
+Parametr `-Language` pomija pytanie o język, np.:
+
+```powershell
+& ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -Language de
+```
+
+Wybór obejmuje także przygotowanie SDK i środowiska budowania. Skrypty `install-nexo-build.ps1`
+i `update-nexo-sdk.ps1` można też uruchamiać osobno z `-Language pl|en|de`; bez parametru używają
+polskiego. Starsze paczki Connection mogą zawierać skrypt aktualizacji SDK bez obsługi języków.
+Wtedy instalator informuje o tym i kontynuuje, a komunikaty tego skryptu pozostają po polsku.
+Komunikaty narzędzi zewnętrznych (PowerShell, SQL, .NET) i odczytane logi runnera zachowują swój język.
 
 Skrypt:
 
@@ -42,7 +58,7 @@ Skrypt:
 2. zapisuje sekcję `Connect` w `Config\nexoModule.json` (pozostałe klucze pliku zostają),
 3. pobiera `Nexo.Connection.zip` do `Modules\` i kopiuje `update-nexo-sdk.ps1` do katalogu runnera,
 4. tworzy `Modules\Nexo.Sdk.zip` z SDK w wersji Subiekta,
-5. z `-BuildTools` przygotowuje budowanie modułów na runnerze (patrz [Budowanie na runnerze](#budowanie-na-runnerze)),
+5. zawsze przygotowuje budowanie modułów na runnerze (patrz [Budowanie na runnerze](#budowanie-na-runnerze)),
 6. restartuje usługę i czeka do 60 s, aż w logu pojawi się `Add method: Nexo.WhoAmI`.
 
 Ponowne uruchomienie aktualizuje instalację: dane połączenia zostają (skrypt pyta tylko o brakujące),
@@ -52,22 +68,22 @@ wersję pamięta `nexo-sdk.json` w katalogu runnera). Stary `Nexo.zip` jest prze
 Bez pytań, wszystko z parametrów:
 
 ```powershell
-& ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -DatabaseServer 'SERWER\INSERTNEXO' -DatabaseName Nexo_Firma `
+& ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -Language pl -DatabaseServer 'SERWER\INSERTNEXO' -DatabaseName Nexo_Firma `
     -DatabaseUser sa -DatabasePassword '...' -UserName Szef -UserPassword '...'
 ```
 
 | Parametr | Opis |
 |---|---|
+| `-Language` | Język komunikatów i pytań: `pl`, `en` albo `de`. Pomija wybór języka na początku. |
 | `-DatabaseServer`, `-DatabaseName` | Serwer SQL z instancją (np. `SERWER\INSERTNEXO`) i baza podmiotu. |
 | `-DatabaseUser`, `-DatabasePassword` | Logowanie do SQL użytkownikiem SQL. |
 | `-WindowsLogin` | Logowanie do SQL kontem Windows. Łączy się **konto usługi runnera**, a test w skrypcie robi konto administratora, więc nie potwierdza dostępu usługi. Zwykle wymaga przełączenia usługi na konto domenowe z prawami do bazy. |
 | `-UserName`, `-UserPassword` | Operator Subiekta, na którego loguje się Sfera; hasło może być puste. |
 | `-SubiektVersion` | Wersja z „Pomoc > O programie” (np. `61.1.1`) zamiast odczytu z bazy. |
 | `-SdkDir` | Gotowy katalog `Bin` rozpakowanego SDK zamiast pobierania z FTP. |
-| `-PackagePath` | Lokalny `Nexo.Connection.zip` zamiast pobierania z GitHuba. Z `-SdkDir` daje instalację bez internetu. |
+| `-PackagePath` | Lokalny `Nexo.Connection.zip` zamiast pobierania z GitHuba. Zależności budowania są nadal pobierane z nuget.org. |
 | `-Version` | Konkretny release modułu, np. `1.1.3`; domyślnie najnowszy. |
-| `-BuildTools` | Dodatkowo przygotowuje budowanie modułów na runnerze. |
-| `-ConnectionPackagePath` | Z `-BuildTools`: lokalny `.nupkg` Connection zamiast pobierania z nuget.org. |
+| `-ConnectionPackagePath` | Lokalny `.nupkg` Connection zamiast pobierania z nuget.org. |
 | `-InstallDir`, `-ServiceName` | Katalog i usługa runnera; domyślnie `C:\zapqio\runner` i `ZapqioRunner`. |
 | `-NoRestart` | Bez restartu usługi na końcu. |
 
@@ -324,8 +340,9 @@ runnerze mogą działać moduły z obu trybów. W obu przypadkach Connection, SD
 
 ### Budowanie na runnerze
 
-Na nowej instalacji uruchom `install-nexo.ps1 -BuildTools`. Na już skonfigurowanym runnerze wystarczy
-poniższy skrypt (PowerShell jako administrator; nie pyta o SQL):
+`install-nexo.ps1` zawsze przygotowuje środowisko budowania, także przy ponownym uruchomieniu.
+Na już skonfigurowanym runnerze można odświeżyć samo środowisko poniższym skryptem
+(PowerShell jako administrator; nie pyta o SQL):
 
 ```powershell
 $s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1
@@ -336,13 +353,16 @@ Skrypt:
 
 - pobiera z nuget.org `Zapqio.Nexo.Connection` w wersji zainstalowanego zipa (sprawdza, że DLL jest ta sama)
   i `Zapqio.Runner.Module.Core 1.2.0`,
-- rozpakowuje biblioteki z `Modules\Nexo.Sdk.zip` do `Build\NexoSdk\` i wpisuje tę ścieżkę jako
+- rozpakowuje biblioteki z `Modules\Nexo.Sdk.zip` do `Build\NexoSdk\<hash paczki>\Bin` i wpisuje tę ścieżkę jako
   `nexoSdkBinPath` do `Deployments\Directory.Build.props`,
 - zapisuje `Deployments\NuGet.Config` (tylko nuget.org, cache w `Build\Packages`),
 - instaluje systemowe .NET SDK 8 x64, jeśli nie ma .NET SDK 8 lub nowszego,
 - daje kontu usługi prawo zapisu do `Build\` i `Deployments\` i ustawia w jej środowisku `PATH`,
   `DOTNET_CLI_HOME` i `NUGET_PACKAGES`,
 - kompiluje próbny moduł i restartuje usługę (chyba że podano `-NoRestart`).
+
+Biblioteki w `Build\NexoSdk\` i cache NuGet pozostają na dysku do kolejnych kompilacji. Skrypt usuwa
+tylko pliki tymczasowe instalacji i projekt próbny.
 
 Próbna kompilacja działa na koncie administratora; ścieżkę na koncie usługi sprawdza dopiero pierwsze
 wdrożenie z Weba.
@@ -358,8 +378,9 @@ pozostałe nadal z nuget.org.
 
 ### Gotowa paczka z CI
 
-Na serwerze wystarczy `install-nexo.ps1` bez `-BuildTools`. Moduł buduje workflow repozytorium w GitHub
-Actions, a Web pobiera z udanego przebiegu dla wybranego commita artefakt `zapqio-module` z plikiem
+Na serwerze uruchom `install-nexo.ps1`; środowisko budowania jest przygotowywane również przy korzystaniu
+z paczek z CI. Moduł buduje workflow repozytorium w GitHub Actions, a Web pobiera z udanego przebiegu
+dla wybranego commita artefakt `zapqio-module` z plikiem
 `module.zip`. Zip z GitHub Releases go nie zastępuje. Wzorcowy workflow:
 [dotnet-module-nexo-test/.github/workflows/build.yml](https://github.com/zapqio/dotnet-module-nexo-test/blob/main/.github/workflows/build.yml).
 
@@ -389,6 +410,16 @@ API: moduł skompilowany przeciw 1.0.0 działa z każdym zipem 1.x. Zmiana łami
 wszystkich konsumentów. Wersja Subiekta nie ma z tym nic wspólnego.
 
 ### Testy
+
+Języki instalatora (Windows PowerShell 5.1, bez sieci, bazy i zmian w działającym runnerze):
+
+```powershell
+.\tests\Test-InstallerLanguage.ps1
+```
+
+Sprawdza kompletność tłumaczeń, formatowanie parametrów, menu wyboru języka, pracę bez konsoli,
+przekazywanie języka do skryptów pomocniczych i komunikaty każdego skryptu w trzech językach.
+Workflow wydania uruchamia ten test przy każdym pushu na `main`, także bez zmiany wersji paczki.
 
 Paczki (to samo robi workflow wydania; wymaga .NET SDK i nuget.org):
 

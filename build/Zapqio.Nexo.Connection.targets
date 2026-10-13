@@ -32,6 +32,6 @@
           Condition="'$(DesignTimeBuild)' != 'true'">
     <Error Condition="!Exists('$(_ZapqioNexoSdkBinPath)%(_ZapqioNexoSdkAssembly.Identity).dll')"
            Code="ZNEXO001"
-           Text="InsERT nexo SDK file not found: $(_ZapqioNexoSdkBinPath)%(_ZapqioNexoSdkAssembly.Identity).dll. Download the SDK from InsERT and install it in C:\nexoSDK_$(NexoSdkVersion)\Bin, or set nexoSdkBinPath to your SDK Bin directory. For builds on a Zapqio runner, run install-nexo.ps1 -BuildTools. The NuGet package does not include the InsERT SDK." />
+           Text="InsERT nexo SDK file not found: $(_ZapqioNexoSdkBinPath)%(_ZapqioNexoSdkAssembly.Identity).dll. Download the SDK from InsERT and install it in C:\nexoSDK_$(NexoSdkVersion)\Bin, or set nexoSdkBinPath to your SDK Bin directory. For builds on a Zapqio runner, run install-nexo.ps1. The NuGet package does not include the InsERT SDK." />
   </Target>
 </Project>
