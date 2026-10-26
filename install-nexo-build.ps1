@@ -4,13 +4,20 @@
     Przygotowuje zainstalowanego runnera do budowania modulow nexo z repozytoriow Weba.
 .DESCRIPTION
     Uruchamiany automatycznie przez install-nexo.ps1. Mozna go tez uruchomic osobno, aby odswiezyc
-    srodowisko budowania. Wykorzystuje Modules\Nexo.Sdk.zip, pobiera NuGet Connection w wersji
-    zainstalowanego modulu z nuget.org. Module.Core przywraca z nuget.org.
+    srodowisko budowania. Wykorzystuje aktywny profil z nexo-build.json: SDK i prywatny NuGet Connection.
+    Starsze instalacje bez profilu korzystaja z Modules\Nexo.Sdk.zip i publicznego NuGet.
+    Module.Core przywraca z nuget.org.
     Konfiguruje Deployments i sprawdza kompilacje.
     W razie braku SDK .NET instaluje systemowe SDK 8 x64. Nie zmienia danych SQL.
 .PARAMETER ConnectionPackagePath
     Lokalny plik Zapqio.Nexo.Connection.<wersja>.nupkg zamiast pobierania z nuget.org.
     Musi zawierac DLL zgodna z zainstalowanym ZIP-em. Core nadal pochodzi z nuget.org.
+.PARAMETER SetManifestPath
+    Manifest przygotowanego zestawu SDK. Domyslnie wskazany przez nexo-build.json.
+.PARAMETER ValidateOnly
+    Sprawdza zestaw w katalogu tymczasowym, bez zapisu konfiguracji wdrozen i zmiany uslugi.
+.PARAMETER FilesOnly
+    Zapisuje konfiguracje i sprawdza kompilacje; pomija ACL, rejestr i restart (uzywa go updater).
 .PARAMETER Language
     Jezyk komunikatow: pl, en albo de. Domyslnie pl; install-nexo.ps1 przekazuje wybrany jezyk.
 .PARAMETER NoRestart
@@ -21,6 +28,9 @@ param(
     [string]$InstallDir = 'C:\zapqio\runner',
     [string]$ServiceName = 'ZapqioRunner',
     [string]$ConnectionPackagePath,
+    [string]$SetManifestPath,
+    [switch]$ValidateOnly,
+    [switch]$FilesOnly,
     [switch]$NoRestart,
     [ValidateSet('pl', 'en', 'de')][string]$Language = 'pl'
 )
@@ -239,14 +249,33 @@ function Get-BuildDotnet([string]$Work) {
 
 $InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir).TrimEnd('\')
 $modules = Join-Path $InstallDir 'Modules'
-foreach ($path in 'Zapqio.Runner.exe', 'Modules\Nexo.Connection.zip', 'Modules\Nexo.Sdk.zip') {
-    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $path))) {
-        throw (Get-InstallText 'MissingRuntime' @($path, $InstallDir))
+$set = $null
+if (-not $SetManifestPath -and -not $ConnectionPackagePath -and (Test-Path -LiteralPath (Join-Path $InstallDir 'nexo-build.json'))) {
+    $activeSet = Get-Content -LiteralPath (Join-Path $InstallDir 'nexo-build.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $SetManifestPath = $activeSet.manifestPath
+}
+if ($SetManifestPath) {
+    . (& (Join-Path $PSScriptRoot 'build-nexo-set.ps1') -FunctionsOnly)
+    $set = Read-NexoSet $SetManifestPath
+    $modules = Join-Path $set.Root 'Modules'
+    $ConnectionPackagePath = Get-NexoChildPath $set.Root $set.connectionPackage
+    if (-not $ValidateOnly) {
+        foreach ($name in 'Nexo.Connection.zip', 'Nexo.Sdk.zip') {
+            $installed = Join-Path $InstallDir ('Modules\' + $name)
+            if (-not (Test-Path -LiteralPath $installed) -or (Get-NexoHash $installed) -ne (Get-NexoHash (Join-Path $modules $name))) {
+                throw "Installed $name differs from the selected nexo set. Run update-nexo-sdk.ps1 to activate the complete set."
+            }
+        }
+    }
+}
+foreach ($path in @((Join-Path $InstallDir 'Zapqio.Runner.exe'), (Join-Path $modules 'Nexo.Connection.zip'), (Join-Path $modules 'Nexo.Sdk.zip'))) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw (Get-InstallText 'MissingRuntime' @((Split-Path $path -Leaf), $InstallDir))
     }
 }
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($service) {
+if ($service -and -not $FilesOnly -and -not $ValidateOnly) {
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw (Get-InstallText 'ServiceAdmin')
@@ -323,7 +352,11 @@ try {
         $package.Dispose()
     }
 
-    if ($ConnectionPackagePath) {
+    if ($set) {
+        $localSource = Join-Path $set.Root 'Feed'
+        $packageCache = Join-Path $set.Root 'Packages'
+    }
+    elseif ($ConnectionPackagePath) {
         # Separate an explicit local package from public packages with the same ID/version.
         $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
         $localRoot = Join-Path $build ("LocalConnection\" + $packageHash)
@@ -335,7 +368,7 @@ try {
 
     $sdkZipPath = Join-Path $modules 'Nexo.Sdk.zip'
     $sdkHash = (Get-FileHash -LiteralPath $sdkZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $sdkBin = Join-Path $build "NexoSdk\$sdkHash\Bin"
+    $sdkBin = if ($set) { Get-NexoChildPath $set.Root $set.sdkBin } else { Join-Path $build "NexoSdk\$sdkHash\Bin" }
     [void][IO.Directory]::CreateDirectory($sdkBin)
     $sdkZip = [IO.Compression.ZipFile]::OpenRead($sdkZipPath)
     try {
@@ -345,7 +378,7 @@ try {
 
         foreach ($entry in $sdkZip.Entries) {
             # Kopiujemy tylko biblioteki z katalogu glownego, bez sciezek z archiwum.
-            if ($entry.FullName -match '^[^/\\:]+\.dll$' -and $entry.FullName -ne '..') {
+            if (-not $set -and $entry.FullName -match '^[^/\\:]+\.dll$' -and $entry.FullName -ne '..') {
                 [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $sdkBin $entry.Name), $true)
             }
         }
@@ -357,11 +390,12 @@ try {
     $sdkVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $sdkBin 'InsERT.Moria.Sfera.dll')).ProductVersion
     Write-Host (Get-InstallText 'BuildSdk' @($sdkVersion))
     $dotnet = Get-BuildDotnet $work
-    $configPath = Join-Path $deployments 'NuGet.Config'
+    $configurationDir = if ($ValidateOnly) { $work } else { $deployments }
+    $configPath = Join-Path $configurationDir 'NuGet.Config'
     Write-BuildNuGetConfig -Path $configPath -PackageCache $packageCache -LocalSource $localSource
 
-    $propsPath = Join-Path $deployments 'Directory.Build.props'
-    $props = Read-Xml $propsPath 'Project'
+    $propsPath = Join-Path $configurationDir 'Directory.Build.props'
+    $props = Read-Xml (Join-Path $deployments 'Directory.Build.props') 'Project'
     $group = $props.DocumentElement.SelectSingleNode("PropertyGroup[@Label='ZapqioNexoBuild']")
     if (-not $group) {
         $group = $props.CreateElement('PropertyGroup')
@@ -377,10 +411,24 @@ try {
 
     $property.SetAttribute('Condition', "'`$(nexoSdkBinPath)' == ''")
     $property.InnerText = $sdkBin + '\'
+    if ($set) {
+        # MSBuild RestorePackagesPath takes precedence over a service's old
+        # NUGET_PACKAGES environment. SDK updates need no registry privileges.
+        $restoreProperty = $group.SelectSingleNode('RestorePackagesPath')
+        if (-not $restoreProperty) {
+            $restoreProperty = $props.CreateElement('RestorePackagesPath')
+            [void]$group.AppendChild($restoreProperty)
+        }
+        $restoreProperty.InnerText = $packageCache
+    }
+    else {
+        $restoreProperty = $group.SelectSingleNode('RestorePackagesPath')
+        if ($restoreProperty) { [void]$group.RemoveChild($restoreProperty) }
+    }
     Save-Xml $props $propsPath
 
     # Proba korzysta z tych samych plikow nadrzednych co wdrozenia Weba.
-    $probe = Join-Path $deployments ('nexo-build-check-' + [guid]::NewGuid().ToString('N'))
+    $probe = Join-Path $configurationDir ('nexo-build-check-' + [guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($probe)
     $project = @"
 <Project Sdk="Microsoft.NET.Sdk">
@@ -395,7 +443,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $probe 'Probe.cs'), 'using Nexo; using InsERT.Moria.Uzytkownicy; public class Probe { public string Read(NexoClient client) => client.Uchwyt.PodajObiektTypu<IZalogowanyUzytkownik>().Dane.Sygnatura; }')
     Push-Location $probe
     try {
-        & $dotnet build 'Probe.csproj' -c Release --nologo -v quiet "-p:RestoreConfigFile=$configPath" "-p:RestorePackagesPath=$packageCache"
+        & $dotnet build 'Probe.csproj' -c Release --nologo -v quiet "-p:RestoreConfigFile=$configPath" "-p:RestorePackagesPath=$packageCache" "-p:nexoSdkBinPath=$sdkBin"
         if ($LASTEXITCODE -ne 0) {
             throw (Get-InstallText 'ProbeFailed')
         }
@@ -409,7 +457,12 @@ try {
         throw (Get-InstallText 'RestoredDllMismatch')
     }
 
-    if ($service) {
+    if ($ValidateOnly) {
+        Write-Host (Get-InstallText 'BuildReady' @($ServiceName))
+        return
+    }
+
+    if ($service -and -not $FilesOnly) {
         $serviceInfo = Get-CimInstance Win32_Service | Where-Object { $_.Name -eq $ServiceName } | Select-Object -First 1
         $account = $serviceInfo.StartName
         if ($account -and $account -ne 'LocalSystem') {
@@ -443,7 +496,7 @@ try {
             Restart-Service -Name $ServiceName
         }
     }
-    else {
+    elseif (-not $service) {
         Write-Warning (Get-InstallText 'NoService' @($ServiceName))
     }
 

@@ -13,12 +13,15 @@ W `Modules\` runnera leżą trzy rodzaje paczek:
 | Paczka | Zawartość | Skąd |
 |---|---|---|
 | `Nexo.Sdk.zip` | SDK InsERT nexo w wersji Subiekta | tworzy ją `update-nexo-sdk.ps1` |
-| `Nexo.Connection.zip` | `NexoClient`, „Nexo: Who am I”, `update-nexo-sdk.ps1` | [Releases](https://github.com/zapqio/dotnet-module-nexo-connection/releases) |
+| `Nexo.Connection.zip` | `NexoClient`, „Nexo: Who am I”, źródła do przebudowy i skrypty | przebudowa wybranego [wydania](https://github.com/zapqio/dotnet-module-nexo-connection/releases) pod SDK klienta |
 | `Nexo.Invoices.zip`, ... | metody | repozytoria modułów |
 
-SDK jest w osobnej paczce, więc aktualizacja Subiekta nie wymaga przebudowy modułów. Paczka SDK
-i paczka z `NexoClient` mają być dokładnie po jednej - stary `Nexo.zip` sprzed podziału zawiera
-obie, więc trzeba go usunąć (instalator robi to sam).
+SDK jest w osobnej paczce, ale zmiana SDK wymaga przebudowy Connection i modułów zależnych. Skrypty
+robią to automatycznie, zachowując numer pakietu Connection i wpisy `PackageReference`. Przykładowo
+SDK 61 i 62 mają różne `PublicKeyToken` bibliotek InsERT mimo jednakowego `AssemblyVersion=1.0.0.0`.
+Sama podmiana `Nexo.Sdk.zip` może więc zakończyć się `FileLoadException (0x80131040)`.
+Paczka SDK i paczka z `NexoClient` mają być dokładnie po jednej; instalator przenosi stary `Nexo.zip`
+do `Nexo.zip.old` (przy nieudanej aktywacji przywraca go).
 
 ## Instalacja na runnerze
 
@@ -46,8 +49,7 @@ Parametr `-Language` pomija pytanie o język, np.:
 
 Wybór obejmuje także przygotowanie SDK i środowiska budowania. Skrypty `install-nexo-build.ps1`
 i `update-nexo-sdk.ps1` można też uruchamiać osobno z `-Language pl|en|de`; bez parametru używają
-polskiego. Starsze paczki Connection mogą zawierać skrypt aktualizacji SDK bez obsługi języków.
-Wtedy instalator informuje o tym i kontynuuje, a komunikaty tego skryptu pozostają po polsku.
+polskiego. Instalator dostarcza też `build-nexo-set.ps1`; diagnostyka tego narzędzia jest po angielsku.
 Komunikaty narzędzi zewnętrznych (PowerShell, SQL, .NET) i odczytane logi runnera zachowują swój język.
 
 Skrypt:
@@ -55,15 +57,16 @@ Skrypt:
 1. pyta o dane połączenia (serwer SQL, logowanie SQL albo Windows, baza podmiotu - podpowiada listę
    baz z serwera, operator Subiekta i jego hasło), sprawdza połączenie z SQL i odczytuje z bazy wersję
    Subiekta,
-2. zapisuje sekcję `Connect` w `Config\nexoModule.json` (pozostałe klucze pliku zostają),
-3. pobiera `Nexo.Connection.zip` do `Modules\` i kopiuje `update-nexo-sdk.ps1` do katalogu runnera,
-4. tworzy `Modules\Nexo.Sdk.zip` z SDK w wersji Subiekta,
+2. zapisuje sekcję `Connect` oraz `SdkUpdate.ServiceName` w `Config\nexoModule.json` (pozostałe klucze zostają),
+3. pobiera wybrane wydanie `Nexo.Connection.zip` i SDK w wersji Subiekta,
+4. buduje oraz sprawdza Connection, lokalny NuGet i zarejestrowane moduły, następnie aktywuje cały zestaw,
 5. zawsze przygotowuje budowanie modułów na runnerze (patrz [Budowanie na runnerze](#budowanie-na-runnerze)),
 6. restartuje usługę i czeka do 60 s, aż w logu pojawi się `Add method: Nexo.WhoAmI`.
 
 Ponowne uruchomienie aktualizuje instalację: dane połączenia zostają (skrypt pyta tylko o brakujące),
-zip modułu jest podmieniany na najnowszy, a SDK tylko przy zmianie wersji Subiekta (zainstalowaną
-wersję pamięta `nexo-sdk.json` w katalogu runnera). Stary `Nexo.zip` jest przemianowywany na `Nexo.zip.old`.
+Connection aktualizuje się do wybranego wydania (domyślnie najnowszego). Gotowy zestaw tych samych
+źródeł, SDK i narzędzi jest używany ponownie. Aktywny zestaw wskazuje `nexo-build.json`, wersję SDK
+pamięta również `nexo-sdk.json` w katalogu runnera.
 
 Bez pytań, wszystko z parametrów:
 
@@ -83,7 +86,8 @@ Bez pytań, wszystko z parametrów:
 | `-SdkDir` | Gotowy katalog `Bin` rozpakowanego SDK zamiast pobierania z FTP. |
 | `-PackagePath` | Lokalny `Nexo.Connection.zip` zamiast pobierania z GitHuba. Zależności budowania są nadal pobierane z nuget.org. |
 | `-Version` | Konkretny release modułu, np. `1.1.3`; domyślnie najnowszy. |
-| `-ConnectionPackagePath` | Lokalny `.nupkg` Connection zamiast pobierania z nuget.org. |
+| `-ConnectionSource` | Katalog lub ZIP źródeł wybranej wersji Connection; opcjonalny przy migracji starszego wydania. |
+| `-ModulesConfig` | Rejestr źródeł modułów; domyślnie `Config\nexo-build-sources.json`. |
 | `-InstallDir`, `-ServiceName` | Katalog i usługa runnera; domyślnie `C:\zapqio\runner` i `ZapqioRunner`. |
 | `-NoRestart` | Bez restartu usługi na końcu. |
 
@@ -98,6 +102,7 @@ W panelu Web uruchom **„Nexo: Who am I”** - zwraca sygnaturę operatora, wer
 | `SDK ... nie połączył się z Subiektem: ... Wersja bazy danych to X ...` | SDK w innej wersji niż Subiekt - patrz [Aktualizacja Subiekta](#aktualizacja-subiekta). |
 | `SDK ... nie połączył się z Subiektem: ...` (inna treść) | Złe dane SQL albo serwer niedostępny. |
 | `Nexo login failed: operator ...` | Zły operator albo hasło. |
+| `FileLoadException`, `manifest definition does not match`, `0x80131040` | Connection lub moduł zbudowany pod inne SDK. Uruchom nowy updater, przebudowujący cały zestaw. |
 
 Paczki z metodami (np. `Nexo.Invoices.zip`) wrzucasz do `Modules\` i restartujesz usługę.
 
@@ -130,8 +135,7 @@ instalator. Po każdej zmianie zrestartuj usługę.
 - `Connect` - jak parametry instalatora; przy `WindowsLogin: true` pola `DatabaseUser` i `DatabasePassword`
   są pomijane.
 - `SdkUpdate` - automatyczna podmiana SDK, patrz [Aktualizacja Subiekta](#aktualizacja-subiekta).
-  **Usługa o innej nazwie niż `ZapqioRunner`: wpisz ją w `ServiceName`** - instalator tego nie robi,
-  a bez tego automat nie zrestartuje runnera.
+  Instalator zapisuje przekazane `-ServiceName`, również dla usługi o niestandardowej nazwie.
 - Inne moduły Nexo dopisują do pliku własne sekcje przy pierwszym starcie.
 
 Plik zawiera hasła, więc katalog `Config\` ma uprawnienia jak `appsettings.json` runnera (nadaje je
@@ -143,17 +147,18 @@ Połączenie powstaje przy pierwszym użyciu `Uchwyt`; w logu zadania widać wte
 
 ### Instalacja ręczna
 
-1. Jako administrator uruchom `update-nexo-sdk.ps1` (z repo albo z `Nexo.Connection.zip`) z wersją
-   z „Pomoc > O programie”:
+1. Umieść wybrane wydanie `Nexo.Connection.zip` w `Modules\`. Skrypty `update-nexo-sdk.ps1`,
+   `build-nexo-set.ps1` i `install-nexo-build.ps1` muszą leżeć razem, np. w katalogu repozytorium.
+   Zarejestruj źródła własnych modułów według opisu poniżej.
+2. Jako administrator uruchom updater z wersją z „Pomoc > O programie”:
 
    ```powershell
-   .\update-nexo-sdk.ps1 -Version 61.1.1 -NoRestart
+   .\update-nexo-sdk.ps1 -Version 62.0.0.9537 -NoRestart
    ```
 
-   Skrypt pobiera `nexoSDK_61_1_1.exe` z FTP InsERT i tworzy `Modules\Nexo.Sdk.zip`. Masz rozpakowane
-   SDK: `-SdkDir C:\nexoSDK_61.1.1.9471\Bin` zamiast `-Version`. Runner w innym katalogu niż
-   `C:\zapqio\runner`: dodaj `-RunnerDir <katalog>`.
-2. Wrzuć `Nexo.Connection.zip` i paczki z metodami do `Modules\`.
+   Skrypt pobiera `nexoSDK_62_0_0.exe` z FTP InsERT, buduje i aktywuje cały zestaw. Masz rozpakowane
+   SDK: `-SdkDir C:\nexoSDK_62.0.0.9537\Bin` zamiast `-Version`. Runner w innym katalogu:
+   dodaj `-RunnerDir <katalog>`. Nie nadpisuj potem Connection publicznym ZIP-em sprzed przebudowy.
 3. Zrestartuj usługę. W logu: `Moduł współdzielony: Nexo.Sdk`, `Moduł współdzielony: Nexo.Connection`,
    `Add injection: Nexo.NexoClient`, `Add method: Nexo.WhoAmI`.
 4. Uzupełnij sekcję `Connect` w utworzonym `Config\nexoModule.json` i zrestartuj usługę ponownie.
@@ -162,14 +167,16 @@ Połączenie powstaje przy pierwszym użyciu `Uchwyt`; w logu zadania widać wte
 
 Sfera wymaga SDK w tej samej wersji co Subiekt. Po aktualizacji Subiekta pierwsze zadanie Nexo kończy
 się błędem `... Wersja bazy danych to X ...`, a `NexoClient` uruchamia w tle `update-nexo-sdk.ps1 -Version X`.
-Skrypt pobiera SDK z FTP InsERT, podmienia `Nexo.Sdk.zip` i restartuje usługę. Po kilku minutach zadania
-działają; zadania przerwane restartem trzeba ponowić z panelu.
+Skrypt pobiera SDK z FTP InsERT i przygotowuje spójny zestaw: SDK, Connection, lokalny NuGet oraz
+moduły z zarejestrowanych źródeł. Dopiero po kompilacji i sprawdzeniu referencji podmienia pliki
+i restartuje usługę. Zadania przerwane restartem trzeba ponowić z panelu.
 
 - Przebieg jest w `Logs\nexo-sdk-update.log`, stan w `nexo-sdk-update.json` w katalogu runnera.
 - Kolejne padające zadania nie uruchamiają drugiej podmiany. Nieudana próba dla tej samej wersji jest
   ponawiana najwcześniej po godzinie.
-- Skrypt działa na koncie usługi: potrzebuje dostępu do `ftp.insertcdn.pl` i miejsca na dysku
-  (pobrane i rozpakowane SDK zajmuje w `.sdk-tmp` ponad 1,5 GB).
+- Skrypt działa na koncie usługi: potrzebuje .NET SDK 8+, dostępu do źródeł modułów, nuget.org,
+  `ftp.insertcdn.pl` i miejsca na dysku. Pobrane i rozpakowane SDK zajmuje ponad 1,5 GB; dodatkowo
+  zachowywane są zestawy w `Build\NexoSets` i kopie poprzedniej instalacji w `Build\NexoTransactions`.
 - Restart wymaga, żeby konto usługi miało prawo start/stop na własnej usłudze (nadaje je `install.ps1`
   runnera od wersji 0.1.9). Bez niego skrypt kończy proces runnera, a usługa wstaje z opcji odzyskiwania
   po 5 s.
@@ -177,41 +184,80 @@ działają; zadania przerwane restartem trzeba ponowić z panelu.
 Ustawienia w sekcji `SdkUpdate`:
 
 - `Enabled: false` - bez automatu; błąd zadania podaje polecenie do uruchomienia ręcznie,
-- `Restart: false` - skrypt podmienia zip, restart robisz sam,
+- `Restart: false` - skrypt aktywuje zestaw plików, restart robisz sam,
 - `ServiceName` - usługa do restartu,
 - `RunnerDir` - katalog runnera; `null` = katalog binarki,
-- `ModulesUrl` - [komplety modułów](#komplety-modułów).
+- `ModulesUrl` - pozostaw `null`; stare zestawy samych ZIP-ów nie są już obsługiwane.
 
 Ręcznie, jako administrator:
 
 ```powershell
-.\update-nexo-sdk.ps1 -Version <wersja z "O programie"> [-RunnerDir <katalog runnera>]
+.\update-nexo-sdk.ps1 -Version 62.0.0.9537 -RunnerDir 'C:\zapqio\runner'
 ```
 
-Moduły nie wymagają przebudowy, bo wiążą się z SDK po nazwie zestawu. Programista jest potrzebny tylko
-wtedy, gdy InsERT zmienił w SDK składową, z której korzysta moduł - wychodzi to przy kompilacji modułu
-przeciw nowemu SDK (`-p:NexoSdkVersion=<wersja>`).
+Ten sam mechanizm obsługuje kolejne wersje, np. 63 i 64: nie ma listy dozwolonych wersji SDK ani
+potrzeby podbijania Connection z powodu zmiany SDK. Jeśli InsERT zmieni używane API, kompilacja
+zgłosi błąd, a dotychczasowy zestaw pozostanie zainstalowany.
 
-### Komplety modułów
+Automatyczne wykrywanie w `NexoClient` pozostaje bez zmian. `FileLoadException` występujący jeszcze
+przed wejściem do kodu połączenia może nie uruchomić automatu — po wcześniejszej podmianie samych DLL
+trzeba raz uruchomić nowy updater ręcznie. To nie jest nowy mechanizm monitorowania wersji bazy.
 
-Opcja dla wdrożeń z własnym serwerem modułów zbudowanych pod daną wersję SDK. `ModulesUrl` to adres
-z `{version}` (wersja trzyczłonowa, np. `61.1.1`), np. `https://serwer.firma.pl/zapqio/sdk-{version}`.
-Pod nim leży `manifest.json`:
+### Źródła i zestawy do przebudowy
+
+Przy pierwszej migracji uruchom nowy `install-nexo.ps1`, który instaluje trzy współpracujące skrypty.
+Connection pobiera własne źródła z `nexo-source.zip` zawartego w paczce. Dla starego wydania może
+jednorazowo pobrać źródła z GitHuba według pełnego commita zapisanego w DLL. Jeśli brak obu danych,
+podaj `-ConnectionSource <katalog lub ZIP>` z tą samą wersją projektu. Nie pobiera bieżącego `main`
+jako zamiennika kodu starszego Connection. Po przebudowie ZIP niesie już źródła do kolejnych aktualizacji.
+
+Własne moduły zarejestruj raz w `Config\nexo-build-sources.json`:
 
 ```json
 {
-  "built": "2026-10-01",
-  "testedLive": true,
   "modules": [
-    { "name": "Nexo.Invoices.zip", "sha256": "..." }
+    {
+      "packageName": "Nexo.Invoices",
+      "sourcePath": "D:\\zapqio-sources\\nexo-invoices",
+      "project": "Nexo.Invoices.csproj"
+    }
   ]
 }
 ```
 
-Po podmianie SDK skrypt pobiera z listy tylko zipy, które już są w `Modules\`, i sprawdza `sha256`
-(jeśli podane); `built` i `testedLive` trafiają tylko do logu. Gdy kompletu dla nowej wersji nie ma,
-obecne moduły zostają z ostrzeżeniem. Przy ręcznym uruchomieniu zamiast adresu można podać katalog
-albo udział: `-ModulesPath \\serwer\zapqio\sdk-{version}`.
+`packageName` to nazwa ZIP-a bez rozszerzenia. `sourcePath` wskazuje katalog lub ZIP ze źródłami;
+ścieżki względne liczone są od pliku konfiguracji. `project` jest ścieżką `.csproj` względem korzenia
+tych źródeł. Zamiast `sourcePath` można podać `sourceUrl` (HTTPS) i obowiązkowe `sha256` archiwum.
+Opcjonalna sekcja `connection` ma taki sam format źródła. Konto usługi musi móc odczytać te dane.
+Źródła powinny być samodzielne, wraz z używanymi `ProjectReference` i konfiguracją budowania.
+Nie rejestruj źródeł z hasłami: są kopiowane do profilu budowania.
+
+Updater sprawdza także już zainstalowane ZIP-y. Jeśli znajdzie moduł zależny od InsERT/Connection,
+którego źródeł nie zarejestrowano, kończy pracę przed aktywacją. Stare `-ModulesUrl` i `-ModulesPath`
+zgłaszają błąd zamiast zostawiać niezgodne moduły po aktualizacji SDK.
+
+Samo przygotowanie, bez zmiany zainstalowanych plików i bez restartu:
+
+```powershell
+.\update-nexo-sdk.ps1 -Version 62.0.0.9537 -RunnerDir 'C:\zapqio\runner' -PrepareOnly
+# albo z gotowym SDK, bez pobierania:
+.\build-nexo-set.ps1 -SdkDir 'C:\nexoSDK_62.0.0.9537\Bin' -RunnerDir 'C:\zapqio\runner'
+```
+
+Wynik znajduje się w `Build\NexoSets\<hash>\`: manifest `nexo-set.json`, ZIP-y w `Modules`, prywatny
+NuGet w `Feed`, cache w `Packages`, SDK w `Sdk\Bin` i logi kompilacji przy źródłach. Hash uwzględnia
+zawartość SDK, źródła oraz narzędzia; ponowne uruchomienie sprawdza sumy i używa gotowego zestawu.
+Prywatny NuGet zachowuje wersję Connection, ale nigdy nie trafia ponownie na nuget.org.
+
+Aktywacja zapisuje kopie i dziennik `Build\nexo-update-journal.json`. Błąd podmiany przywraca poprzednie
+ZIP-y, konfigurację budowania i skrypty; przerwaną podmianę odzyskuje kolejne uruchomienie updatera.
+Restart następuje po zatwierdzeniu zestawu. Nieudany restart pozostawia spójny nowy zestaw na dysku
+i zgłasza błąd. `-NoRestart` wymaga późniejszego restartu, aby proces wczytał nowe biblioteki.
+
+Moduły zarządzane przez Web wymagają wdrożenia przygotowanych artefaktów przez Web. Updater blokuje
+ich bezpośrednią podmianę, aby nie rozjechać sum plików z historią wdrożeń runnera. `-PrepareOnly`
+jest dostępne także dla takich instalacji. Ten zakres zmian nie dodaje koordynacji całego wdrożenia
+SDK przez Web i nie modyfikuje Runnera.
 
 ## Własny moduł na Nexo.Connection
 
@@ -345,36 +391,39 @@ Na już skonfigurowanym runnerze można odświeżyć samo środowisko poniższym
 (PowerShell jako administrator; nie pyta o SQL):
 
 ```powershell
-$s = irm https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1
-& ([scriptblock]::Create($s.TrimStart([char]0xFEFF))) -InstallDir 'C:\zapqio\runner' -ServiceName 'ZapqioRunner'
+& 'C:\zapqio\runner\install-nexo-build.ps1' -InstallDir 'C:\zapqio\runner' -ServiceName 'ZapqioRunner'
 ```
 
 Skrypt:
 
-- pobiera z nuget.org `Zapqio.Nexo.Connection` w wersji zainstalowanego zipa (sprawdza, że DLL jest ta sama)
-  i `Zapqio.Runner.Module.Core 1.2.0`,
-- rozpakowuje biblioteki z `Modules\Nexo.Sdk.zip` do `Build\NexoSdk\<hash paczki>\Bin` i wpisuje tę ścieżkę jako
-  `nexoSdkBinPath` do `Deployments\Directory.Build.props`,
-- zapisuje `Deployments\NuGet.Config` (tylko nuget.org, cache w `Build\Packages`),
+- odczytuje aktywny profil z `nexo-build.json`, używa jego prywatnego `Zapqio.Nexo.Connection`
+  i sprawdza zgodność DLL z zainstalowanym ZIP-em; pozostałe zależności pobiera z nuget.org,
+- wpisuje SDK profilu jako `nexoSdkBinPath` do `Deployments\Directory.Build.props`,
+- zapisuje `Deployments\NuGet.Config` ze źródłem prywatnym, mapowaniem pakietu Connection i nuget.org;
+  `RestorePackagesPath` wskazuje cache konkretnego profilu, również przy starym `NUGET_PACKAGES` usługi,
 - instaluje systemowe .NET SDK 8 x64, jeśli nie ma .NET SDK 8 lub nowszego,
 - daje kontu usługi prawo zapisu do `Build\` i `Deployments\` i ustawia w jej środowisku `PATH`,
   `DOTNET_CLI_HOME` i `NUGET_PACKAGES`,
 - kompiluje próbny moduł i restartuje usługę (chyba że podano `-NoRestart`).
 
-Biblioteki w `Build\NexoSdk\` i cache NuGet pozostają na dysku do kolejnych kompilacji. Skrypt usuwa
-tylko pliki tymczasowe instalacji i projekt próbny.
+Profile `Build\NexoSets\` i cache NuGet pozostają na dysku do kolejnych kompilacji i aktualizacji.
+Nie usuwaj profilu wskazanego w `nexo-build.json` ani plików potrzebnych do odzyskania transakcji.
 
 Próbna kompilacja działa na koncie administratora; ścieżkę na koncie usługi sprawdza dopiero pierwsze
 wdrożenie z Weba.
 
-Uruchom skrypt ponownie po zmianie Connection lub SDK nexo. Wersja Connection z zainstalowanego zipa
-musi być opublikowana na nuget.org (od `1.1.3`) - skrypt nie zastępuje jej inną. Repozytorium z własnym
-`Directory.Build.props` musi importować plik nadrzędny albo ustawić `nexoSdkBinPath`. Prywatne źródła
-paczek dodaj w `NuGet.Config` repozytorium, zostawiając nuget.org.
+Do zmiany SDK używaj `update-nexo-sdk.ps1`; samo `install-nexo-build.ps1` nie przebudowuje Connection.
+Repozytorium z własnym `Directory.Build.props` musi importować plik nadrzędny albo ustawić zarówno
+`nexoSdkBinPath`, jak i `RestorePackagesPath`. Własny `NuGet.Config` musi zachować źródło wariantu
+i mapowanie `Zapqio.Nexo.Connection`; sam publiczny pakiet o tym samym numerze nie jest zamiennikiem.
+
+Starsza instalacja bez `nexo-build.json` nadal używa publicznego NuGet o wersji i DLL zgodnych z ZIP-em,
+`Build\NexoSdk\<hash>\Bin` oraz `Build\Packages`. To tryb zgodności; migrację wykonuje nowy instalator.
 
 `-ConnectionPackagePath <plik.nupkg>` używa lokalnie zbudowanego Connection (DLL musi być ta sama co
 w zainstalowanym zipie). Ta jedna paczka idzie z osobnego źródła i cache w `Build\LocalConnection\<hash>`,
-pozostałe nadal z nuget.org.
+pozostałe nadal z nuget.org. Ten parametr pozostaje w `install-nexo-build.ps1`; główny `install-nexo.ps1`
+go odrzuca, ponieważ sam buduje właściwy pakiet.
 
 ### Gotowa paczka z CI
 
@@ -384,13 +433,17 @@ dla wybranego commita artefakt `zapqio-module` z plikiem
 `module.zip`. Zip z GitHub Releases go nie zastępuje. Wzorcowy workflow:
 [dotnet-module-nexo-test/.github/workflows/build.yml](https://github.com/zapqio/dotnet-module-nexo-test/blob/main/.github/workflows/build.yml).
 
+CI także musi użyć SDK i prywatnego wariantu Connection odpowiadających serwerowi. Publiczny NuGet
+oraz samo przestawienie `nexoSdkBinPath` konsumenta nie przebudują DLL Connection. Przygotowany zestaw
+udostępnia `Feed`, `NuGet.Config`, `Sdk\Bin` i ZIP-y; ścieżki konfiguracji trzeba dostosować na maszynie CI.
+
 ## Budowanie i wydania
 
 Build tego repo wymaga SDK InsERT w `C:\nexoSDK_61.1.0.9431\Bin\` (albo `-p:nexoSdkBinPath=...`).
 `dotnet publish -c Release` daje w `bin\Release\`:
 
-- `Nexo.Connection.zip` - paczka dla runnera: `Nexo.Connection.dll`, `update-nexo-sdk.ps1`, `LICENSE`,
-  `##Dll`, `##Shared`, bez SDK,
+- `Nexo.Connection.zip` - paczka dla runnera: `Nexo.Connection.dll`, trzy skrypty aktualizacji/budowania,
+  `nexo-source.zip`, `LICENSE`, `##Dll`, `##Shared`, bez SDK,
 - `Zapqio.Nexo.Connection.<wersja>.nupkg` - paczka NuGet dla modułów (opis na nuget.org to `NUGET.md`).
 
 Wydanie:
@@ -405,9 +458,10 @@ Wydanie:
 Najnowszy zip jest zawsze pod
 `https://github.com/zapqio/dotnet-module-nexo-connection/releases/latest/download/Nexo.Connection.zip`.
 
-`Version` rośnie z każdą zmianą modułu. `AssemblyVersion` zostaje `1.0.0.0`, dopóki zmiana nie łamie
-API: moduł skompilowany przeciw 1.0.0 działa z każdym zipem 1.x. Zmiana łamiąca to `2.0.0.0` i przebudowa
-wszystkich konsumentów. Wersja Subiekta nie ma z tym nic wspólnego.
+`Version` identyfikuje wydanie kodu/API Connection. `AssemblyVersion` zostaje `1.0.0.0`, dopóki zmiana
+nie łamie API. Zmiana samego SDK nie wymaga nowego numeru pakietu, ale wymaga zgodnych referencji
+InsERT w Connection i konsumentach. Dlatego warianty SDK o tym samym numerze są rozdzielone
+prywatnymi źródłami i cache; nie są kolejnymi publicznymi wydaniami tego samego numeru NuGet.
 
 ### Testy
 
@@ -420,6 +474,24 @@ Języki instalatora (Windows PowerShell 5.1, bez sieci, bazy i zmian w działaj�
 Sprawdza kompletność tłumaczeń, formatowanie parametrów, menu wyboru języka, pracę bez konsoli,
 przekazywanie języka do skryptów pomocniczych i komunikaty każdego skryptu w trzech językach.
 Workflow wydania uruchamia ten test przy każdym pushu na `main`, także bez zmiany wersji paczki.
+
+Odzyskiwanie przerwanej aktualizacji, kontrola ścieżek i integralności kopii (offline, tylko TEMP):
+
+```powershell
+.\tests\Test-NexoSetSafety.ps1
+```
+
+Pełna przebudowa z konsumentem, niezmienionym `PackageReference`, izolacją cache, aktywacją,
+ochroną modułów zarządzanych przez Web i ponownym użyciem zestawu (bez prawdziwej usługi i SQL):
+
+```powershell
+.\tests\Test-NexoSdkRebuild.ps1 -SdkDir 'C:\nexoSDK_62.0.0.9537\Bin' `
+    -ConnectionDll 'bin\Release\Nexo.Connection.dll' -PreviousSdkDir 'C:\nexoSDK_61.1.0.9431\Bin'
+```
+
+DLL wejściowa musi mieć tę samą wersję, co bieżące źródła. `-PreviousSdkDir` jest opcjonalne.
+`tests/Test-NexoBinding.ps1 -ConnectionDll <DLL> -SdkDir <Bin> -CoreDll <DLL Core>` sprawdza JIT
+`WhoAmI.Run` na .NET 8 bez logowania do SQL. Testy nie potwierdzają logowania ani restartu rzeczywistej usługi.
 
 Paczki (to samo robi workflow wydania; wymaga .NET SDK i nuget.org):
 

@@ -15,8 +15,8 @@
 		     W runtime Connection jest w Nexo.Connection.zip, a SDK w osobnym Nexo.Sdk.zip w Modules\ runnera. -->
 		<PackageId>Zapqio.Nexo.Connection</PackageId>
 		<Version>1.1.3</Version>
-		<!-- Tożsamość zestawu stała, jak w Module.Core: konsument skompilowany przeciw 1.0.0 wiąże się
-		     z każdym 1.x. Podbić dopiero przy zmianie łamiącej API (wtedy 2.0.0.0 i przebudowa konsumentów). -->
+		<!-- Tożsamość własnego zestawu pozostaje stała w ramach zgodnego API.
+		     Referencje InsERT nadal muszą pasować do SDK. Podbić przy zmianie łamiącej API. -->
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
 		<Authors>Zapqio</Authors>
 		<Company>Hdwr global</Company>
@@ -32,10 +32,9 @@
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
 
-		<!-- SDK nie jedzie w tym zipie: na runnerze leży w osobnej paczce współdzielonej Nexo.Sdk.zip
-		     (pakuje ją update-nexo-sdk.ps1), więc zmiana wersji Subiekta nie wymaga przebudowy niczego.
-		     Referencje SDK (targets paczki) służą tu i u konsumentów tylko do kompilacji. Domyślna wersja
-		     w props to wersja do kompilacji, niezależna od tego, co klient ma w Nexo.Sdk.zip. -->
+		<!-- SDK ma osobną paczkę Nexo.Sdk.zip. Updater przebudowuje Connection i konsumentów
+		     przeciw docelowemu SDK, bez zmiany wersji API/pakietu Connection. Lokalne warianty
+		     mają oddzielne źródła NuGet i cache; nie są publikowane ponownie na nuget.org. -->
 		<NexoSdkCopyLocal>false</NexoSdkCopyLocal>
 	</PropertyGroup>
 
@@ -47,10 +46,32 @@
 		<None Include="NUGET.md" Pack="true" PackagePath="/" />
 		<!-- Skrypt podmiany SDK jedzie w zipie; NexoClient kopiuje go do katalogu runnera (automatyczna podmiana). -->
 		<None Include="update-nexo-sdk.ps1" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="build-nexo-set.ps1" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="install-nexo-build.ps1" CopyToOutputDirectory="PreserveNewest" />
 		<PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
 	</ItemGroup>
 
 	<Import Project="build\Zapqio.Nexo.Connection.targets" />
+
+	<!-- Preserve this exact source version for future SDK rebuilds, including offline updates. -->
+	<Target Name="PrepareNexoRebuildSource" BeforeTargets="ComputeFilesToPublish">
+		<PropertyGroup>
+			<NexoRebuildSourceDir>$(IntermediateOutputPath)nexo-source\</NexoRebuildSourceDir>
+			<NexoRebuildSourceZip>$(IntermediateOutputPath)nexo-source.zip</NexoRebuildSourceZip>
+		</PropertyGroup>
+		<ItemGroup>
+			<_NexoRootSource Include="*.cs;*.ps1;$(MSBuildProjectFile);LICENSE;NUGET.md" />
+			<_NexoBuildSource Include="build\*.props;build\*.targets" />
+		</ItemGroup>
+		<RemoveDir Directories="$(NexoRebuildSourceDir)" />
+		<MakeDir Directories="$(NexoRebuildSourceDir)build" />
+		<Copy SourceFiles="@(_NexoRootSource)" DestinationFolder="$(NexoRebuildSourceDir)" />
+		<Copy SourceFiles="@(_NexoBuildSource)" DestinationFolder="$(NexoRebuildSourceDir)build" />
+		<ZipDirectory SourceDirectory="$(NexoRebuildSourceDir)" DestinationFile="$(NexoRebuildSourceZip)" Overwrite="true" />
+		<ItemGroup>
+			<ResolvedFileToPublish Include="$(NexoRebuildSourceZip)" RelativePath="nexo-source.zip" CopyToPublishDirectory="Always" />
+		</ItemGroup>
+	</Target>
 
 	<!--Zip after publish-->
 	<Target Name="ZipAfterPublish" AfterTargets="Publish">

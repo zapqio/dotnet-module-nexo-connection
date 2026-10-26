@@ -37,6 +37,10 @@ jobs:
         shell: powershell
         run: ./tests/Test-InstallerLanguage.ps1
 
+      - name: Sprawdz odzyskiwanie aktualizacji SDK
+        shell: powershell
+        run: ./tests/Test-NexoSetSafety.ps1
+
       - name: Wersja paczki z csproj, wersja SDK z props
         id: ver
         shell: bash
@@ -151,8 +155,9 @@ jobs:
           body: |
             `Nexo.Connection.zip` do `Modules\` runnera (obok `Nexo.Sdk.zip` z SDK w wersji Subiekta klienta),
             `Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg` dla modułów konsumenckich.
-            Skompilowano przeciw SDK InsERT nexo ${{ steps.sdk.outputs.found }}; działa z każdą wersją SDK
-            (stała AssemblyVersion zestawów InsERT).
+            Skompilowano przeciw SDK InsERT nexo ${{ steps.sdk.outputs.found }}.
+            Dla innego SDK instalator przebudowuje Connection i moduły ze źródeł,
+            zachowując numer pakietu w osobnym lokalnym źródle NuGet.
           files: |
             bin/Release/Nexo.Connection.zip
             bin/Release/Zapqio.Nexo.Connection.${{ steps.ver.outputs.version }}.nupkg

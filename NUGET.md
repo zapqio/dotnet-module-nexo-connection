@@ -20,7 +20,9 @@ to the InsERT nexo SDK.
 
 Target .NET 8 and x64: InsERT libraries do not load on .NET 9+. Your module ZIP should contain only
 your own DLL. On the runner, Core comes with the runner, `NexoClient` from `Nexo.Connection.zip`
-and the SDK from `Nexo.Sdk.zip`. Use the NuGet package and `Nexo.Connection.zip` from the same release.
+and the SDK from `Nexo.Sdk.zip`. Use the NuGet package and `Nexo.Connection.zip` from the same build
+for the target SDK. An SDK upgrade rebuilds both Connection and dependent modules; replacing only
+the SDK files can fail even when InsERT's `AssemblyVersion` is unchanged.
 
 ```csharp
 using System;
@@ -58,6 +60,13 @@ Set them in the project, in `Directory.Build.props` or with `-p:`. A missing SDK
 with `ZNEXO001`; restore does not download the SDK. `NexoSdkCopyLocal=true` copies the SDK libraries
 to the output; keep the default `false` for runner packages. On a Zapqio runner,
 `install-nexo.ps1` always prepares the SDK for builds.
+
+The SDK updater creates a private Connection package with the **same package version**, plus matching
+runtime ZIPs. Each source/SDK combination has a separate local feed and restore cache. Consumer
+`PackageReference` entries stay unchanged. Preserve the generated source mapping and
+`RestorePackagesPath` when customizing your build configuration; a public package with the same
+version may contain a DLL compiled for a different SDK. Private variants are not republished to
+nuget.org. Future SDK versions use the same process, provided the source still compiles against them.
 
 Runner installation and configuration: [repository README](https://github.com/zapqio/dotnet-module-nexo-connection).
 

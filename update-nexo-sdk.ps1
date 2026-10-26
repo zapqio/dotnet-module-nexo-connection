@@ -4,9 +4,9 @@
 
 .DESCRIPTION
   Pobiera nexoSDK z publicznego FTP InsERT (albo bierze gotowy katalog Bin), pakuje go do
-  Modules\Nexo.Sdk.zip z markerami ##Shared i ##Dll, opcjonalnie pobiera komplet modułów zbudowany pod tę
-  wersję SDK i restartuje usługę runnera. Moduły Nexo nie wymagają przebudowy: zestawy SDK mają stałą
-  AssemblyVersion, więc wiążą się z każdą wersją SDK po nazwie.
+  Modules\Nexo.Sdk.zip z markerami ##Shared i ##Dll, przebudowuje Connection i zarejestrowane moduły,
+  sprawdza cały zestaw, aktywuje go z kopią zapasową oraz restartuje usługę runnera.
+  Wersja NuGet Connection pozostaje bez zmian; wariant SDK ma osobne lokalne źródło i cache.
 
   Uruchamiany ręcznie jako administrator albo automatycznie przez NexoClient (moduł Nexo.Connection) po
   wykryciu niezgodności wersji: wtedy działa na koncie usługi, bez konsoli (-Log) i zapisuje wynik do
@@ -14,7 +14,7 @@
   runnera, który SCM podnosi z opcji odzyskiwania.
 
 .PARAMETER Version
-  Wersja Subiekta z "Pomoc > O programie", trzy człony jak w nazwie pliku na FTP, np. 61.1.1.
+  Wersja Subiekta z "Pomoc > O programie", np. 62.0.0 lub 62.0.0.9537.
 
 .PARAMETER SdkDir
   Gotowy katalog Bin rozpakowanego SDK (np. C:\nexoSDK_61.1.0.9431\Bin); pomija pobieranie.
@@ -29,15 +29,25 @@
   Język komunikatów: pl, en albo de. Domyślnie pl; install-nexo.ps1 przekazuje wybrany język.
 
 .PARAMETER NoRestart
-  Tylko podmiana zipa, bez restartu usługi (np. sprawdzenie bez zainstalowanej usługi).
+  Aktywacja całego zestawu bez restartu usługi. Do samego przygotowania użyj -PrepareOnly.
 
 .PARAMETER ModulesUrl
-  Skąd brać komplet modułów zbudowany pod tę wersję SDK: adres HTTP z {version}, pod nim manifest.json z listą zipów,
-  np. https://serwer.firma.pl/zapqio/sdk-{version}. Podmieniane są tylko
-  te zipy, które już leżą w Modules. Brak kompletu = ostrzeżenie, obecne moduły zostają.
+  Parametr wycofany; skrypt zgłasza błąd. Zarejestruj źródła przez -ModulesConfig.
 
 .PARAMETER ModulesPath
-  To samo, ale katalog albo udział z {version}, np. \\serwer\zapqio\releases\sdk-{version}.
+  Parametr wycofany; skrypt zgłasza błąd. Zarejestruj źródła przez -ModulesConfig.
+
+.PARAMETER ConnectionZip
+  ZIP Connection do przebudowy. Domyślnie Modules\Nexo.Connection.zip runnera.
+
+.PARAMETER ConnectionSource
+  Katalog lub ZIP źródeł tej samej wersji Connection. Potrzebny tylko przy migracji paczki bez źródeł/commita.
+
+.PARAMETER ModulesConfig
+  Rejestr źródeł modułów. Domyślnie Config\nexo-build-sources.json; opis formatu w README.md.
+
+.PARAMETER PrepareOnly
+  Buduje i sprawdza zestaw, ale nie zmienia zainstalowanych modułów, konfiguracji budowania ani usługi.
 
 .PARAMETER Log
   Plik, do którego dopisywane są komunikaty (oprócz konsoli); NexoClient podaje Logs\nexo-sdk-update.log.
@@ -53,7 +63,7 @@
   .\update-nexo-sdk.ps1 -Version 61.1.1
 
 .EXAMPLE
-  .\update-nexo-sdk.ps1 -Version 61.1.1 -ModulesUrl https://serwer.firma.pl/zapqio/sdk-{version}
+  .\update-nexo-sdk.ps1 -Version 62.0.0.9537 -PrepareOnly
 
 .EXAMPLE
   .\update-nexo-sdk.ps1 -SdkDir C:\nexoSDK_61.1.0.9431\Bin -RunnerDir D:\zapqio\runner -NoRestart
@@ -70,6 +80,10 @@ param(
     [string] $Log,
     [string] $State,
     [string] $WorkDir,
+    [string] $ConnectionZip,
+    [string] $ConnectionSource,
+    [string] $ModulesConfig,
+    [switch] $PrepareOnly,
     [ValidateSet('pl', 'en', 'de')][string] $Language = 'pl'
 )
 
@@ -191,11 +205,9 @@ function Write-Log([string] $Message, [switch] $IsWarning) {
 function Write-State([string] $Result, [string] $Message) {
     if (-not $State) { return }
     try {
-        $current = $null
-        if (Test-Path $State) { $current = Get-Content $State -Raw -Encoding UTF8 | ConvertFrom-Json }
         $obj = [ordered]@{
-            version    = $(if ($current -and $current.version) { $current.version } elseif ($Version) { $Version } else { $null })
-            startedAt  = $(if ($current -and $current.startedAt) { $current.startedAt } else { (Get-Date).ToString('o') })
+            version    = $(if ($Version) { $Version } else { $sdkVersion })
+            startedAt  = $updateStartedAt
             finishedAt = $(if ($Result -eq 'running') { $null } else { (Get-Date).ToString('o') })
             result     = $Result
             message    = $Message
@@ -205,56 +217,32 @@ function Write-State([string] $Result, [string] $Message) {
     catch { }
 }
 
-# Komplet modułów dla wersji SDK: manifest.json z listą zipów, podmiana tylko tych, które klient już ma.
-function Update-ModuleSet([string] $ShortVersion, [string] $ModulesDir) {
-    $base = if ($ModulesUrl) { $ModulesUrl.Replace('{version}', $ShortVersion).TrimEnd('/') } else { $ModulesPath.Replace('{version}', $ShortVersion).TrimEnd('\') }
-    $manifest = $null
-    try {
-        if ($ModulesUrl) { $manifest = (Invoke-WebRequest -Uri "$base/manifest.json" -UseBasicParsing).Content | ConvertFrom-Json }
-        elseif (Test-Path (Join-Path $base 'manifest.json')) { $manifest = Get-Content (Join-Path $base 'manifest.json') -Raw | ConvertFrom-Json }
-    }
-    catch {
-        $manifest = $null
-    }
-    if (-not $manifest) {
-        Write-Log (Get-InstallText 'MissingModuleSet' @($ShortVersion, $base)) -IsWarning
-        return
-    }
-    foreach ($m in $manifest.modules) {
-        $target = Join-Path $ModulesDir $m.name
-        if (-not (Test-Path $target)) { continue }   # klient nie ma tego modułu, nie dokładamy
-        $new = "$target.new"
-        if ($ModulesUrl) { Invoke-WebRequest -Uri "$base/$($m.name)" -OutFile $new -UseBasicParsing }
-        else { Copy-Item (Join-Path $base $m.name) $new }
-        $hash = (Get-FileHash $new -Algorithm SHA256).Hash.ToLower()
-        if ($m.sha256 -and $hash -ne $m.sha256) { Remove-Item $new; throw (Get-InstallText 'ModuleHashMismatch' @($m.name)) }
-        Move-Item $new $target -Force
-        Write-Log (Get-InstallText 'ModuleReplaced' @($m.name, $ShortVersion, $manifest.built, $manifest.testedLive))
-    }
-}
-
 function Restart-Runner {
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $service) {
         Write-Log (Get-InstallText 'NoService' @($ServiceName)) -IsWarning
-        return
+        return $false
     }
     try {
         Restart-Service -Name $ServiceName -ErrorAction Stop
+        $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
         Write-Log (Get-InstallText 'ServiceRestarted' @($ServiceName))
-        return
+        return $true
     }
     catch {
         Write-Log (Get-InstallText 'ServiceRestartFailed' @($ServiceName, $_.Exception.Message)) -IsWarning
     }
     # Zapas dla instalacji bez prawa start/stop dla konta usługi: własny proces wolno zakończyć.
-    $procs = @(Get-Process -Name 'Zapqio.Runner' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($RunnerDir, [StringComparison]::OrdinalIgnoreCase) })
+    $expectedExe = Join-Path $RunnerDir 'Zapqio.Runner.exe'
+    $procs = @(Get-Process -Name 'Zapqio.Runner' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and [string]::Equals($_.Path, $expectedExe, [StringComparison]::OrdinalIgnoreCase) })
     if ($procs.Count -eq 0) {
         Write-Log (Get-InstallText 'NoRunnerProcess' @($RunnerDir, $ServiceName)) -IsWarning
-        return
+        throw (Get-InstallText 'NoRunnerProcess' @($RunnerDir, $ServiceName))
     }
     $procs | Stop-Process -Force
     Write-Log (Get-InstallText 'RunnerStopped' @(($procs.Id -join ', ')))
+    $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+    return $true
 }
 
 # Ścieżki względne liczone od bieżącej lokalizacji PowerShella ("cd C:\zapqio\runner" + "-RunnerDir .").
@@ -268,18 +256,43 @@ if ($State) { $State = Resolve-Full $State }
 $modules = Join-Path $RunnerDir 'Modules'
 if (-not $WorkDir) { $WorkDir = Join-Path $RunnerDir '.sdk-tmp' }
 $temp = Join-Path $WorkDir ('sdk-' + [guid]::NewGuid().ToString('N'))
+$updateStartedAt = (Get-Date).ToString('o')
+$updateLock = $null
+$helpersLoaded = $false
 
 try {
     if (-not (Test-Path $modules)) {
         throw (Get-InstallText 'MissingModules' @($modules))
     }
+    if ($ModulesUrl -or $ModulesPath) { throw 'ZIP-only module sets cannot be assumed SDK-compatible. Register sources with -ModulesConfig (Config\nexo-build-sources.json), or deploy a complete rebuilt set through Web.' }
+    $buildScript = Join-Path $PSScriptRoot 'build-nexo-set.ps1'
+    if (-not (Test-Path -LiteralPath $buildScript)) { throw 'Missing build-nexo-set.ps1. Run the updated install-nexo.ps1 once to install the build tools.' }
+    . (& $buildScript -FunctionsOnly)
+    $helpersLoaded = $true
+    $buildDir = Get-NexoChildPath $RunnerDir 'Build'
+    [void][IO.Directory]::CreateDirectory($buildDir)
+    $updateLock = [IO.File]::Open((Join-Path $buildDir 'nexo-update.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    if (-not $PrepareOnly) { Restore-NexoTransaction $RunnerDir }
     Write-State 'running' (Get-InstallText 'Started')
     New-Item $temp -ItemType Directory -Force | Out-Null
 
     if ($PSCmdlet.ParameterSetName -eq 'Download') {
-        if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+        if ($Version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
             throw (Get-InstallText 'InvalidVersion' @($Version))
         }
+        $requestedVersion = $Version
+        $Version = (($Version -split '\.')[0..2] -join '.')
+        $activePath = Join-Path $RunnerDir 'nexo-build.json'
+        if (Test-Path -LiteralPath $activePath) {
+            $active = Get-Content -LiteralPath $activePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ((($active.sdkVersion -split '\.')[0..2] -join '.') -eq $Version -and ($requestedVersion -eq $Version -or $active.sdkVersion -eq $requestedVersion)) {
+                $activeSet = Read-NexoSet $active.manifestPath
+                $SdkDir = Get-NexoChildPath $activeSet.Root $activeSet.sdkBin
+            }
+        }
+    }
+
+    if ($PSCmdlet.ParameterSetName -eq 'Download' -and -not $SdkDir) {
         $file = 'nexoSDK_' + ($Version -replace '\.', '_') + '.exe'
         $exe = Join-Path $temp $file
         Write-Log (Get-InstallText 'Downloading' @($ftp, $file))
@@ -289,7 +302,7 @@ try {
 
         # Plik to 7-Zip SFX: -y bez pytań, -o katalog docelowy; w środku nexoSDK_<pełna wersja>\Bin.
         $extract = Join-Path $temp 'sdk'
-        $p = Start-Process -FilePath $exe -ArgumentList @('-y', "-o`"$extract`"") -Wait -PassThru -NoNewWindow
+        $p = Start-Process -FilePath $exe -ArgumentList @('-y', "-o`"$extract`"") -Wait -PassThru -WindowStyle Hidden
         if ($p.ExitCode -ne 0) {
             throw (Get-InstallText 'ExtractionFailed' @($file, $p.ExitCode))
         }
@@ -306,6 +319,7 @@ try {
     }
     $sdkVersion = ([Diagnostics.FileVersionInfo]::GetVersionInfo($sfera).ProductVersion -split '\+')[0]
     $shortVersion = (($sdkVersion -split '\.')[0..2] -join '.')
+    if ($Version -and ($shortVersion -ne $Version -or ($requestedVersion -ne $Version -and $sdkVersion -ne $requestedVersion))) { throw "Downloaded SDK $sdkVersion does not match requested $requestedVersion." }
     Write-Log (Get-InstallText 'SdkSource' @($sdkVersion, $SdkDir))
 
     # Paczka współdzielona runnera: ##Shared = inne paczki biorą stąd biblioteki,
@@ -313,43 +327,36 @@ try {
     # Do paczki idą biblioteki (*.dll) i zasoby (*.pak) z poziomu Bin, bez podkatalogów, programów .exe,
     # dokumentacji i pomocy: to nadzbiór tego, co niósł dotychczasowy Nexo.zip budowany przez MSBuild
     # (549 DLL + Xml.pak + Mrt.pak), a cały Bin ma 1,1 GB, z czego połowa to Subiekt.exe, libcef i Pomoc.chm.
-    $staging = Join-Path $temp 'Nexo.Sdk'
-    New-Item $staging -ItemType Directory | Out-Null
-    $files = Get-ChildItem $SdkDir -File | Where-Object { $_.Extension -in '.dll', '.pak' }
-    $files | Copy-Item -Destination $staging
-    Write-Log (Get-InstallText 'Packing' @($files.Count, (($files | Measure-Object Length -Sum).Sum / 1MB)))
-    New-Item (Join-Path $staging '##Shared') -ItemType File | Out-Null
-    New-Item (Join-Path $staging '##Dll') -ItemType File | Out-Null
-
-    # Stała nazwa: na runnerze ma być dokładnie jedna paczka SDK, podmieniana, nie dokładana.
-    $zip = Join-Path $modules 'Nexo.Sdk.zip'
-    $new = "$zip.new"
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    if (Test-Path $new) { Remove-Item $new }
-    [IO.Compression.ZipFile]::CreateFromDirectory($staging, $new)
-    Move-Item $new $zip -Force
-    Write-Log (Get-InstallText 'Saved' @($zip, ((Get-Item $zip).Length / 1MB), $sdkVersion))
-    [IO.File]::WriteAllText((Join-Path $RunnerDir 'nexo-sdk.json'), (@{ version = $sdkVersion; at = (Get-Date).ToString('o') } | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
-
-    if (Test-Path (Join-Path $modules 'Nexo.zip')) {
-        Write-Log (Get-InstallText 'LegacyZip') -IsWarning
+    $buildParameters = @{ RunnerDir = $RunnerDir; SdkDir = $SdkDir; Language = $Language }
+    if ($ConnectionZip) { $buildParameters.ConnectionZip = $ConnectionZip }
+    if ($ConnectionSource) { $buildParameters.ConnectionSource = $ConnectionSource }
+    if ($ModulesConfig) { $buildParameters.ModulesConfig = $ModulesConfig }
+    $manifestPath = & $buildScript @buildParameters
+    $set = Read-NexoSet $manifestPath
+    Write-Log ("Prepared nexo set: " + $set.ManifestPath)
+    if ($PrepareOnly) {
+        Write-State 'prepared' ("Prepared set: " + $set.ManifestPath)
+        return
     }
-
-    if ($ModulesUrl -or $ModulesPath) {
-        Update-ModuleSet $shortVersion $modules
-    }
+    Test-NexoInstalledConsumers $RunnerDir $set $temp
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-nexo-build.ps1') -InstallDir $RunnerDir -ServiceName $ServiceName -SetManifestPath $set.ManifestPath -ValidateOnly -NoRestart -Language $Language
+    if ($LASTEXITCODE -ne 0) { throw 'The prepared build configuration failed validation; installed files were not changed.' }
+    Install-NexoSet $RunnerDir $set $ServiceName $Language
 
     if ($NoRestart) {
         Write-State 'ok' (Get-InstallText 'UpdatedNoRestart' @($sdkVersion))
         Write-Log (Get-InstallText 'NoRestart' @($ServiceName))
         return
     }
-    Write-State 'ok' (Get-InstallText 'UpdatedRestart' @($sdkVersion))
     Write-Log (Get-InstallText 'Restarting' @($ServiceName))
-    Restart-Runner
+    if (-not (Restart-Runner)) {
+        Write-State 'ok' (Get-InstallText 'UpdatedNoRestart' @($sdkVersion))
+        return
+    }
+    Write-State 'ok' (Get-InstallText 'UpdatedRestart' @($sdkVersion))
     Start-Sleep -Seconds 15
     $latest = Get-ChildItem (Join-Path $RunnerDir 'Logs') -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne (Split-Path $Log -Leaf) } |
+        Where-Object { -not $Log -or $_.Name -ne (Split-Path $Log -Leaf) } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($latest) {
         Write-Log (Get-InstallText 'LatestLog' @($latest.Name))
@@ -364,8 +371,6 @@ catch {
     exit 1
 }
 finally {
-    Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
-    if ((Test-Path $WorkDir) -and -not (Get-ChildItem $WorkDir -Force -ErrorAction SilentlyContinue)) {
-        Remove-Item $WorkDir -Force -ErrorAction SilentlyContinue
-    }
+    if ($updateLock) { $updateLock.Dispose() }
+    if ($helpersLoaded -and (Test-Path -LiteralPath $temp)) { Remove-NexoWork $WorkDir $temp }
 }

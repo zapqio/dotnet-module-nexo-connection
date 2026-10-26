@@ -12,14 +12,15 @@
       1. pyta o dane połączenia z Subiektem nexo (serwer SQL, baza podmiotu, użytkownik SQL, operator)
          albo bierze je z parametrów; sprawdza połączenie z serwerem SQL i odczytuje z bazy wersję Subiekta,
       2. zapisuje je w Config\nexoModule.json (sekcja Connect; inne klucze pliku zostają),
-      3. pobiera Nexo.Connection.zip z GitHub Releases do Modules\,
-      4. pakuje SDK InsERT nexo w wersji Subiekta do Modules\Nexo.Sdk.zip (update-nexo-sdk.ps1 z paczki
-         pobiera SDK z publicznego FTP InsERT - ok. 500 MB),
+      3. pobiera Nexo.Connection.zip z GitHub Releases jako źródło wersji Connection,
+      4. przebudowuje Connection i zarejestrowane moduły pod SDK Subiekta, sprawdza zestaw i aktywuje go
+         (update-nexo-sdk.ps1 pobiera SDK z publicznego FTP InsERT - ok. 500 MB),
       5. przygotowuje budowanie modułów na runnerze: SDK .NET, biblioteki SDK nexo oraz NuGet,
       6. restartuje usługę i czeka, aż w logu runnera pojawi się metoda "Nexo: Who am I".
 
     Uruchomiony ponownie działa jak aktualizacja: dane połączenia zostają (pyta tylko o brakujące),
-    zip modułu jest podmieniany na najnowszy, SDK podmieniane tylko przy zmianie wersji Subiekta.
+    Connection aktualizuje się do wybranego wydania. Gotowy, sprawdzony zestaw tych samych źródeł i SDK
+    jest używany ponownie; sama zmiana SDK nie zmienia numeru pakietu Connection.
 
 .PARAMETER Language
     Język komunikatów i pytań: pl, en albo de. Bez parametru: wybór na początku instalacji.
@@ -70,8 +71,14 @@
     -Version jest wtedy bez znaczenia. Zależności budowania są nadal pobierane z nuget.org.
 
 .PARAMETER ConnectionPackagePath
-    Lokalny NuGet Connection do budowania modułów zamiast pobierania go z nuget.org.
-    DLL musi odpowiadać ZIP-owi; Core jest nadal pobierany z nuget.org.
+    Parametr wycofany w tym instalatorze: lokalny NuGet powstaje automatycznie z docelowym SDK.
+    Pozostaje obsługiwany przez install-nexo-build.ps1 dla starszych instalacji.
+
+.PARAMETER ConnectionSource
+    Katalog lub ZIP źródeł wybranego wydania Connection; opcjonalny przy migracji starszych paczek.
+
+.PARAMETER ModulesConfig
+    Rejestr źródeł modułów do przebudowy. Domyślnie Config\nexo-build-sources.json runnera.
 
 .PARAMETER NoRestart
     Bez restartu usługi na końcu (nowe paczki zostaną wczytane przy następnym starcie).
@@ -113,6 +120,8 @@ param(
     [string]$SdkDir,
     [string]$PackagePath,
     [string]$ConnectionPackagePath,
+    [string]$ConnectionSource,
+    [string]$ModulesConfig,
     [switch]$NoRestart,
     [ValidateSet('pl', 'en', 'de')][string]$Language
 )
@@ -394,20 +403,6 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw (Get-InstallText 'AdminRequired')
 }
 
-# ConvertTo-Json w Windows PowerShell formatuje brzydko (podwójne spacje po dwukropku,
-# rozjechane wcięcia zagnieżdżonych obiektów) - znormalizuj do wcięć 2-spacjowych
-function Format-Json {
-    param([Parameter(Mandatory)][string]$Json)
-    $indent = 0
-    (($Json -split "`r?`n") | ForEach-Object {
-        $line = $_.Trim()
-        if ($line -match '^[}\]]') { $indent = [Math]::Max(0, $indent - 1) }
-        $out = (' ' * (2 * $indent)) + ($line -replace '":\s+', '": ')
-        if ($line -match '[{\[]$') { $indent++ }
-        $out
-    }) -join [Environment]::NewLine
-}
-
 # Pytanie z wartością bieżącą jako domyślną (Enter = zostaw). Hasła bez echa; przy istniejącym haśle
 # Enter zostawia stare, przy braku Enter = brak hasła (operator Subiekta może go nie mieć).
 function Read-Value {
@@ -481,7 +476,8 @@ function Get-ShortVersion {
 
 # --- 1. Runner ------------------------------------------------------------------
 
-$InstallDir = $InstallDir.TrimEnd('\')
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir).TrimEnd('\')
+if ($ConnectionPackagePath) { throw 'ConnectionPackagePath is no longer used by install-nexo.ps1. The matching NuGet is built automatically; provide ConnectionSource for an older source-less release.' }
 $exePath = Join-Path $InstallDir 'Zapqio.Runner.exe'
 if (-not (Test-Path $exePath)) {
     throw (Get-InstallText 'MissingRunner' @($InstallDir))
@@ -684,7 +680,11 @@ foreach ($key in $values.Keys) {
     $connect | Add-Member -NotePropertyName $key -NotePropertyValue $values[$key] -Force
 }
 $config | Add-Member -NotePropertyName 'Connect' -NotePropertyValue $connect -Force
-Format-Json ($config | ConvertTo-Json -Depth 10) | Set-Content -Path $configPath -Encoding UTF8
+$sdkUpdate = Get-Field $config 'SdkUpdate'
+if (-not $sdkUpdate) { $sdkUpdate = [pscustomobject]@{} }
+$sdkUpdate | Add-Member -NotePropertyName 'ServiceName' -NotePropertyValue $ServiceName -Force
+$config | Add-Member -NotePropertyName 'SdkUpdate' -NotePropertyValue $sdkUpdate -Force
+($config | ConvertTo-Json -Depth 30) | Set-Content -Path $configPath -Encoding UTF8
 Write-Host (Get-InstallText 'ConfigSaved' @($configPath))
 
 $legacyConfig = Join-Path $InstallDir $configFileName
@@ -694,6 +694,8 @@ if (Test-Path $legacyConfig) {
 
 $tempDir = Join-Path $env:TEMP ("zapqio-nexo-install-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tempDir | Out-Null
+$legacyMoved = $false
+$setActivated = $false
 
 try {
     # --- 5. Paczka Nexo.Connection --------------------------------------------------------
@@ -727,16 +729,26 @@ try {
     }
     $moduleVersion = (Get-Item $moduleDll).VersionInfo.ProductVersion -replace '\+.*$', ''
 
-    Copy-Item -Path $zipPath -Destination (Join-Path $modulesDir $moduleZipName) -Force
-    # Skrypt podmiany SDK leży w katalogu runnera (stąd uruchamia go NexoClient po aktualizacji Subiekta i admin ręcznie)
-    $updateScript = Join-Path $InstallDir $updateScriptName
-    Copy-Item -Path $updateScriptSource -Destination $updateScript -Force
-    Write-Host (Get-InstallText 'ConnectionInstalled' @($moduleVersion, $modulesDir))
+    # Stage all update tools. The downloaded runtime ZIP is only an input: the
+    # updater rebuilds it against the selected SDK before changing installed files.
+    $toolsDir = Join-Path $tempDir 'tools'
+    [void][IO.Directory]::CreateDirectory($toolsDir)
+    foreach ($helper in 'update-nexo-sdk.ps1', 'build-nexo-set.ps1', 'install-nexo-build.ps1') {
+        $localHelper = if ($PSScriptRoot) { Join-Path $PSScriptRoot $helper } else { $null }
+        $packedHelper = Join-Path $extractDir $helper
+        $helperTarget = Join-Path $toolsDir $helper
+        if ($localHelper -and (Test-Path -LiteralPath $localHelper)) { Copy-Item -LiteralPath $localHelper -Destination $helperTarget }
+        elseif ((Test-Path -LiteralPath (Join-Path $extractDir 'build-nexo-set.ps1')) -and (Test-Path -LiteralPath $packedHelper)) { Copy-Item -LiteralPath $packedHelper -Destination $helperTarget }
+        else { Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$repo/main/$helper" -OutFile $helperTarget -UseBasicParsing }
+    }
+    $updateScript = Join-Path $toolsDir $updateScriptName
 
     # Paczka sprzed podziału modułu niesie własny NexoClient i SDK - dwa komplety w Modules\ to konflikt.
     $legacyZip = Join-Path $modulesDir 'Nexo.zip'
     if (Test-Path $legacyZip) {
-        Move-Item -Path $legacyZip -Destination "$legacyZip.old" -Force
+        if (Test-Path -LiteralPath "$legacyZip.old") { throw "Legacy backup already exists: $legacyZip.old. Move it aside before migrating Nexo.zip." }
+        Move-Item -LiteralPath $legacyZip -Destination "$legacyZip.old"
+        $legacyMoved = $true
         Write-Warning (Get-InstallText 'LegacyZip')
     }
 
@@ -749,11 +761,13 @@ try {
         try { $installedSdk = [string](Get-Content -Path $sdkStatePath -Raw | ConvertFrom-Json).version } catch { }
     }
 
-    if ($targetVersion -and $installedSdk -and (Get-ShortVersion $installedSdk) -eq $targetVersion) {
-        Write-Host (Get-InstallText 'SdkPresent' @($installedSdk, $sdkZip))
-    } else {
+    # SDK version alone is not proof of a complete matching Connection build.
+    # The updater reuses a validated source/SDK profile when it is already ready.
+    & {
         $scriptArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $updateScript,
-                        '-RunnerDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart')
+                        '-RunnerDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart', '-ConnectionZip', $zipPath)
+        if ($ConnectionSource) { $scriptArgs += @('-ConnectionSource', (Resolve-Path -LiteralPath $ConnectionSource).Path) }
+        if ($ModulesConfig) { $scriptArgs += @('-ModulesConfig', (Resolve-Path -LiteralPath $ModulesConfig).Path) }
         if ($SdkDir) {
             Write-Host (Get-InstallText 'PackingSdk' @($SdkDir, $sdkZip))
             $scriptArgs += @('-SdkDir', $SdkDir)
@@ -766,31 +780,22 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw (Get-InstallText 'SdkSetupFailed' @($LASTEXITCODE, $updateScript, $targetVersion, $InstallDir))
         }
-        try { $installedSdk = [string](Get-Content -Path $sdkStatePath -Raw | ConvertFrom-Json).version } catch { }
     }
+    $setActivated = $true
+    $installedSdk = [string](Get-Content -Path $sdkStatePath -Raw | ConvertFrom-Json).version
+    $updateScript = Join-Path $InstallDir $updateScriptName
+    Write-Host (Get-InstallText 'ConnectionInstalled' @($moduleVersion, $modulesDir))
     if ($dbVersion -and $installedSdk -and (Get-ShortVersion $installedSdk) -ne (Get-ShortVersion $dbVersion)) {
         Write-Warning (Get-InstallText 'SdkMismatch' @($installedSdk, $sdkZip, $dbVersion, $updateScript, (Get-ShortVersion $dbVersion), $InstallDir))
     }
 
     # --- 7. Środowisko budowania modułów -----------------------------------------------------
-    $buildScript = Join-Path $tempDir 'install-nexo-build.ps1'
-    $localBuildScript = $null
-    if ($PSScriptRoot) {
-        $localBuildScript = Join-Path $PSScriptRoot 'install-nexo-build.ps1'
-    }
-
-    if ($localBuildScript -and (Test-Path -LiteralPath $localBuildScript)) {
-        Copy-Item -LiteralPath $localBuildScript -Destination $buildScript
-    }
-    else {
-        Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/zapqio/dotnet-module-nexo-connection/main/install-nexo-build.ps1' -OutFile $buildScript -UseBasicParsing
-    }
+    $buildScript = Join-Path $toolsDir 'install-nexo-build.ps1'
 
     $buildArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $buildScript,
                    '-InstallDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart')
-    if ($ConnectionPackagePath) {
-        $buildArgs += @('-ConnectionPackagePath', $ConnectionPackagePath)
-    }
+    # The updater's active profile selects its private package automatically.
+    # A public/previous SDK NuGet must never replace the freshly rebuilt variant.
 
     $buildArgs += @(Get-InstallerLanguageArguments $buildScript)
     & powershell.exe @buildArgs
@@ -868,6 +873,7 @@ try {
     Write-Host (Get-InstallText 'Troubleshooting')
     Write-Host (Get-InstallText 'InstallingModules' @($modulesDir))
 } finally {
+    if ($legacyMoved -and -not $setActivated) { Move-Item -LiteralPath "$legacyZip.old" -Destination $legacyZip }
     # Remove-Item wykrzacza się na ścieżkach ze skróconą nazwą 8.3 (np. C:\Users\UKASZ~1),
     # a taką potrafi mieć %TEMP% - .NET usuwa je bez problemu
     try { [IO.Directory]::Delete($tempDir, $true) } catch {}
