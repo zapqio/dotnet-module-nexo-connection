@@ -177,10 +177,10 @@ function Get-NexoAssemblyMetadata([string]$Path) {
     return ($json | ConvertFrom-Json)
 }
 
-function Test-NexoReferences([string]$Dll, [string]$SdkBin, [string]$ConnectionDll) {
-    $metadata = Get-NexoAssemblyMetadata $Dll
-    if ($metadata.native) { return }
-    foreach ($reference in $metadata.references) {
+function Test-NexoReferences([string]$Dll, [string]$SdkBin, [string]$ConnectionDll, $Metadata = $null) {
+    if (-not $Metadata) { $Metadata = Get-NexoAssemblyMetadata $Dll }
+    if ($Metadata.native) { return }
+    foreach ($reference in $Metadata.references) {
         $name = New-Object Reflection.AssemblyName $reference
         if ($name.Name -like 'InsERT.*') { $target = Join-Path $SdkBin ($name.Name + '.dll') }
         elseif ($name.Name -eq 'Nexo.Connection') { $target = $ConnectionDll }
@@ -280,22 +280,35 @@ function Restore-NexoTransaction([string]$RunnerDir, [switch]$DeploymentLockHeld
 }
 
 function Test-NexoInstalledConsumers([string]$RunnerDir, $Set, [string]$Work) {
-    # ZIP-only consumers cannot safely be kept merely because AssemblyVersion is
-    # unchanged. Explicit source registration is required for the complete set.
+    # A reference to the stable Connection API does not require rebuilding the
+    # consumer. Inspect actual assembly references, including direct SDK uses.
+    $connectionRoot = Get-NexoChildPath $Work ('inspect-connection-' + [guid]::NewGuid().ToString('N'))
+    Expand-NexoZip (Get-NexoChildPath $Set.Root 'Modules/Nexo.Connection.zip') $connectionRoot
+    $connectionDll = Join-Path $connectionRoot 'Nexo.Connection.dll'
+    $sdkBin = Get-NexoChildPath $Set.Root $Set.sdkBin
     foreach ($zipFile in Get-ChildItem -LiteralPath (Join-Path $RunnerDir 'Modules') -Filter '*.zip' -File) {
         if ($zipFile.BaseName -in $Set.modules) { continue }
+        $hash = Get-NexoHash $zipFile.FullName
         $destination = Get-NexoChildPath $Work ('inspect-' + [guid]::NewGuid().ToString('N'))
         Expand-NexoZip $zipFile.FullName $destination
         foreach ($dll in Get-ChildItem -LiteralPath $destination -Filter '*.dll' -File) {
             $metadata = Get-NexoAssemblyMetadata $dll.FullName
-            if (-not $metadata.native -and ($metadata.identity -like 'InsERT.*' -or $metadata.identity -like 'Nexo.Connection,*' -or ($metadata.references | Where-Object { $_ -like 'InsERT.*' -or $_ -like 'Nexo.Connection,*' }))) {
-                throw "Register source for $($zipFile.BaseName) in Config\nexo-build-sources.json before changing SDK. Prepared set: $($Set.ManifestPath)"
+            if (-not $metadata.native -and ($metadata.identity -like 'InsERT.*' -or $metadata.identity -like 'Nexo.Connection,*')) {
+                throw "Module $($zipFile.BaseName) contains its own shared library $($dll.Name). Rebuild and redeploy it without private Connection/InsERT libraries before updating SDK. Prepared set: $($Set.ManifestPath)"
+            }
+            try {
+                Test-NexoReferences $dll.FullName $sdkBin $connectionDll $metadata
+            }
+            catch {
+                throw "Module $($zipFile.BaseName) has an incompatible assembly reference for SDK $($Set.sdkVersion). Rebuild and redeploy it against the target SDK, or register its sources in Config\nexo-build-sources.json for a local rebuild. $($_.Exception.Message) Prepared set: $($Set.ManifestPath)"
             }
         }
+        if ((Get-NexoHash $zipFile.FullName) -ne $hash) { throw "Module $($zipFile.BaseName) changed during validation. Retry the SDK update." }
+        [pscustomobject]@{ packageName = $zipFile.BaseName; sha256 = $hash }
     }
 }
 
-function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string]$Language) {
+function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string]$Language, [object[]]$InstalledConsumers = $null) {
     $deploymentLock = $null
     $journalPath = Get-NexoChildPath $RunnerDir 'Build/nexo-update-journal.json'
     $deployments = Get-NexoChildPath $RunnerDir 'Deployments'
@@ -313,6 +326,16 @@ function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string
             }
         }
         Restore-NexoTransaction $RunnerDir -DeploymentLockHeld
+        if ($PSBoundParameters.ContainsKey('InstalledConsumers')) {
+            # A panel deployment may have finished after validation. Recheck the
+            # unchanged ZIPs under its lock before activating the shared runtime.
+            $currentConsumers = @(Get-ChildItem -LiteralPath (Join-Path $RunnerDir 'Modules') -Filter '*.zip' -File | Where-Object { $_.BaseName -notin $Set.modules })
+            if ($currentConsumers.Count -ne @($InstalledConsumers).Count) { throw 'Installed modules changed after validation. Retry the SDK update.' }
+            foreach ($zipFile in $currentConsumers) {
+                $checked = @($InstalledConsumers | Where-Object { $_.packageName -eq $zipFile.BaseName })
+                if ($checked.Count -ne 1 -or (Get-NexoHash $zipFile.FullName) -ne $checked[0].sha256) { throw "Module $($zipFile.BaseName) changed after validation. Retry the SDK update." }
+            }
+        }
         $transaction = [guid]::NewGuid().ToString('N')
         $backupRoot = Get-NexoChildPath $RunnerDir ('Build/NexoTransactions/' + $transaction)
         [void][IO.Directory]::CreateDirectory($backupRoot)

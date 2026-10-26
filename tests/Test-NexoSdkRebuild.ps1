@@ -100,15 +100,19 @@ Assert ($blocked.Contains('Web-managed')) 'Missing Web-managed module diagnostic
 Assert ((Get-NexoHash $inputZip) -eq $before) 'Managed-module rejection changed installed files.'
 [IO.File]::Delete($statePath)
 
-# An installed ZIP referencing InsERT cannot be silently left at the old SDK.
+# An unregistered consumer with matching references stays unchanged, including
+# modules delivered through Web. Registration is only needed for local rebuilds.
 $unregistered = Join-Path $modules 'Unregistered.zip'
 [IO.File]::Copy((Join-Path $set.Root 'Modules\Consumer.zip'), $unregistered)
 try {
-    $blocked = Invoke-Updater 'unregistered-blocked' @() -ExpectFailure
-    Assert ($blocked.Contains('Register source for Unregistered')) 'Unregistered consumer was not detected.'
-    Assert ((Get-NexoHash $inputZip) -eq $before) 'Unregistered-consumer rejection changed installed files.'
+    $consumerHash = Get-NexoHash $unregistered
+    Write-NexoJson $statePath @{ installed = @(@{ manifest = @{ packageName = 'Unregistered' }; zipSha256 = $consumerHash }) }
+    $stateHash = Get-NexoHash $statePath
+    [void](Invoke-Updater 'unregistered-compatible')
+    Assert ((Get-NexoHash $unregistered) -eq $consumerHash) 'Compatible consumer ZIP was changed.'
+    Assert ((Get-NexoHash $statePath) -eq $stateHash) 'Unchanged Web deployment state was modified.'
 }
-finally { [IO.File]::Delete($unregistered) }
+finally { [IO.File]::Delete($unregistered); [IO.File]::Delete($statePath) }
 
 # Missing source fails before touching the active set.
 $savedConfig = [IO.File]::ReadAllText($config)

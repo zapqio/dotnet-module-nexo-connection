@@ -338,10 +338,10 @@ try {
         Write-State 'prepared' ("Prepared set: " + $set.ManifestPath)
         return
     }
-    Test-NexoInstalledConsumers $RunnerDir $set $temp
+    $installedConsumers = @(Test-NexoInstalledConsumers $RunnerDir $set $temp)
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-nexo-build.ps1') -InstallDir $RunnerDir -ServiceName $ServiceName -SetManifestPath $set.ManifestPath -ValidateOnly -NoRestart -Language $Language
     if ($LASTEXITCODE -ne 0) { throw 'The prepared build configuration failed validation; installed files were not changed.' }
-    Install-NexoSet $RunnerDir $set $ServiceName $Language
+    Install-NexoSet $RunnerDir $set $ServiceName $Language -InstalledConsumers $installedConsumers
 
     if ($NoRestart) {
         Write-State 'ok' (Get-InstallText 'UpdatedNoRestart' @($sdkVersion))

@@ -21,8 +21,10 @@ to the InsERT nexo SDK.
 Target .NET 8 and x64: InsERT libraries do not load on .NET 9+. Your module ZIP should contain only
 your own DLL. On the runner, Core comes with the runner, `NexoClient` from `Nexo.Connection.zip`
 and the SDK from `Nexo.Sdk.zip`. Use the NuGet package and `Nexo.Connection.zip` from the same build
-for the target SDK. An SDK upgrade rebuilds both Connection and dependent modules; replacing only
-the SDK files can fail even when InsERT's `AssemblyVersion` is unchanged.
+for the target SDK. An SDK upgrade rebuilds Connection and checks existing modules' assembly
+references. Compatible modules, including Connection-only consumers deployed through Web, stay
+unchanged and need no source registration. Incompatible consumers require a rebuild; replacing
+only the SDK files can fail even when InsERT's `AssemblyVersion` is unchanged.
 
 ```csharp
 using System;

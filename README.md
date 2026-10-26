@@ -16,8 +16,9 @@ W `Modules\` runnera leżą trzy rodzaje paczek:
 | `Nexo.Connection.zip` | `NexoClient`, „Nexo: Who am I”, źródła do przebudowy i skrypty | przebudowa wybranego [wydania](https://github.com/zapqio/dotnet-module-nexo-connection/releases) pod SDK klienta |
 | `Nexo.Invoices.zip`, ... | metody | repozytoria modułów |
 
-SDK jest w osobnej paczce, ale zmiana SDK wymaga przebudowy Connection i modułów zależnych. Skrypty
-robią to automatycznie, zachowując numer pakietu Connection i wpisy `PackageReference`. Przykładowo
+SDK jest w osobnej paczce, ale zmiana SDK wymaga przebudowy Connection. Skrypty robią to automatycznie,
+zachowując numer pakietu Connection i wpisy `PackageReference`. Moduły ze zgodnymi referencjami mogą
+pozostać bez zmian; te z niezgodnymi zależnościami wymagają przebudowy. Przykładowo
 SDK 61 i 62 mają różne `PublicKeyToken` bibliotek InsERT mimo jednakowego `AssemblyVersion=1.0.0.0`.
 Sama podmiana `Nexo.Sdk.zip` może więc zakończyć się `FileLoadException (0x80131040)`.
 Paczka SDK i paczka z `NexoClient` mają być dokładnie po jednej; instalator przenosi stary `Nexo.zip`
@@ -149,7 +150,7 @@ Połączenie powstaje przy pierwszym użyciu `Uchwyt`; w logu zadania widać wte
 
 1. Umieść wybrane wydanie `Nexo.Connection.zip` w `Modules\`. Skrypty `update-nexo-sdk.ps1`,
    `build-nexo-set.ps1` i `install-nexo-build.ps1` muszą leżeć razem, np. w katalogu repozytorium.
-   Zarejestruj źródła własnych modułów według opisu poniżej.
+   Źródła własnych modułów rejestruj tylko wtedy, gdy mają być lokalnie przebudowywane.
 2. Jako administrator uruchom updater z wersją z „Pomoc > O programie”:
 
    ```powershell
@@ -174,7 +175,7 @@ i restartuje usługę. Zadania przerwane restartem trzeba ponowić z panelu.
 - Przebieg jest w `Logs\nexo-sdk-update.log`, stan w `nexo-sdk-update.json` w katalogu runnera.
 - Kolejne padające zadania nie uruchamiają drugiej podmiany. Nieudana próba dla tej samej wersji jest
   ponawiana najwcześniej po godzinie.
-- Skrypt działa na koncie usługi: potrzebuje .NET SDK 8+, dostępu do źródeł modułów, nuget.org,
+- Skrypt działa na koncie usługi: potrzebuje .NET SDK 8+, dostępu do źródeł przebudowywanych modułów, nuget.org,
   `ftp.insertcdn.pl` i miejsca na dysku. Pobrane i rozpakowane SDK zajmuje ponad 1,5 GB; dodatkowo
   zachowywane są zestawy w `Build\NexoSets` i kopie poprzedniej instalacji w `Build\NexoTransactions`.
 - Restart wymaga, żeby konto usługi miało prawo start/stop na własnej usłudze (nadaje je `install.ps1`
@@ -211,7 +212,14 @@ jednorazowo pobrać źródła z GitHuba według pełnego commita zapisanego w DL
 podaj `-ConnectionSource <katalog lub ZIP>` z tą samą wersją projektu. Nie pobiera bieżącego `main`
 jako zamiennika kodu starszego Connection. Po przebudowie ZIP niesie już źródła do kolejnych aktualizacji.
 
-Własne moduły zarejestruj raz w `Config\nexo-build-sources.json`:
+Moduły korzystające ze zgodnego API Connection mogą pozostać bez przebudowy, także gdy wdrażasz
+je przez panel Web. Updater sprawdza ich rzeczywiste referencje do Connection i InsERT; samo
+odwołanie do `Nexo.Connection` nie wymaga źródeł modułu. ZIP modułu i jego stan wdrożenia w Webie
+pozostają bez zmian. Sprawdzenie tożsamości bibliotek nie zastępuje testu działania modułu,
+jeśli nowe SDK zmieniło używane API przy zachowaniu tej samej tożsamości biblioteki.
+
+Jeśli chcesz również przebudowywać własne moduły lokalnie, zarejestruj je raz w
+`Config\nexo-build-sources.json`:
 
 ```json
 {
@@ -232,9 +240,10 @@ Opcjonalna sekcja `connection` ma taki sam format źródła. Konto usługi musi 
 Źródła powinny być samodzielne, wraz z używanymi `ProjectReference` i konfiguracją budowania.
 Nie rejestruj źródeł z hasłami: są kopiowane do profilu budowania.
 
-Updater sprawdza także już zainstalowane ZIP-y. Jeśli znajdzie moduł zależny od InsERT/Connection,
-którego źródeł nie zarejestrowano, kończy pracę przed aktywacją. Stare `-ModulesUrl` i `-ModulesPath`
-zgłaszają błąd zamiast zostawiać niezgodne moduły po aktualizacji SDK.
+Updater sprawdza także już zainstalowane ZIP-y. Niezgodna referencja (np. zmieniony klucz podpisu
+InsERT) albo prywatna kopia Connection/SDK w module zatrzymuje aktywację z nazwą modułu i przyczyną.
+Taki moduł wymaga poprawienia paczki lub przebudowy pod docelowe SDK. Stare `-ModulesUrl` i
+`-ModulesPath` zgłaszają błąd zamiast zostawiać niezgodne moduły po aktualizacji SDK.
 
 Samo przygotowanie, bez zmiany zainstalowanych plików i bez restartu:
 
@@ -254,10 +263,11 @@ ZIP-y, konfigurację budowania i skrypty; przerwaną podmianę odzyskuje kolejne
 Restart następuje po zatwierdzeniu zestawu. Nieudany restart pozostawia spójny nowy zestaw na dysku
 i zgłasza błąd. `-NoRestart` wymaga późniejszego restartu, aby proces wczytał nowe biblioteki.
 
-Moduły zarządzane przez Web wymagają wdrożenia przygotowanych artefaktów przez Web. Updater blokuje
-ich bezpośrednią podmianę, aby nie rozjechać sum plików z historią wdrożeń runnera. `-PrepareOnly`
-jest dostępne także dla takich instalacji. Ten zakres zmian nie dodaje koordynacji całego wdrożenia
-SDK przez Web i nie modyfikuje Runnera.
+Jeśli moduł zarządzany przez Web rzeczywiście wymaga przebudowy, jego nowy artefakt należy wdrożyć
+przez Web. Updater blokuje bezpośrednie zastąpienie takiego modułu, aby nie rozjechać sum plików
+z historią wdrożeń runnera; zgodny moduł pozostawiany bez zmian nie blokuje aktualizacji SDK
+i Connection. `-PrepareOnly` jest dostępne także dla takich instalacji. Ten zakres zmian nie dodaje
+koordynacji całego wdrożenia SDK przez Web i nie modyfikuje Runnera.
 
 ## Własny moduł na Nexo.Connection
 
@@ -479,6 +489,13 @@ Odzyskiwanie przerwanej aktualizacji, kontrola ścieżek i integralności kopii 
 
 ```powershell
 .\tests\Test-NexoSetSafety.ps1
+```
+
+Zachowanie modułu z panelu używającego tylko Connection przy zmianie klucza podpisu SDK,
+wykrywanie niezgodnych referencji i zmian modułów podczas aktualizacji (offline, .NET SDK, tylko TEMP):
+
+```powershell
+.\tests\Test-NexoInstalledConsumers.ps1
 ```
 
 Pełna przebudowa z konsumentem, niezmienionym `PackageReference`, izolacją cache, aktywacją,
