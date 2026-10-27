@@ -125,7 +125,17 @@ try {
     finally { $archive.Dispose() }
     if ([IO.File]::Exists($archivePath)) { [IO.File]::Replace($temporary, $archivePath, [NullString]::Value) }
     else { [IO.File]::Move($temporary, $archivePath) }
-    $metadata = [ordered]@{ schemaVersion = 1; project = $relativeProject; sha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant() }
+    # dotnet/MSBuild started by PowerShell 7 can pass its PSModulePath to this
+    # Windows PowerShell 5.1 child, where Get-FileHash is then unavailable.
+    # Use the framework directly so publishing does not depend on module loading.
+    $hashStream = [IO.File]::OpenRead($archivePath)
+    try {
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $sourceHash = [BitConverter]::ToString($hasher.ComputeHash($hashStream)).Replace('-', '').ToLowerInvariant() }
+        finally { $hasher.Dispose() }
+    }
+    finally { $hashStream.Dispose() }
+    $metadata = [ordered]@{ schemaVersion = 1; project = $relativeProject; sha256 = $sourceHash }
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'nexo-module-source.json'), ($metadata | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
     Write-Host "Packed nexo module source: $relativeProject ($($files.Count) files)"
 }

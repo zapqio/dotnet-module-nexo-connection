@@ -112,7 +112,10 @@ function Invoke-Dotnet([string]$Name, [string[]]$Arguments, [switch]$ExpectFailu
         }
     }
     elseif ($exitCode -ne 0) {
-        throw "dotnet failed: $Name. Log: $log`n$text"
+        # Keep compiler diagnostics on separate lines in the Actions console;
+        # PowerShell 7 otherwise folds the entire log into one exception line.
+        Write-Host $text
+        throw "dotnet failed: $Name (exit $exitCode). Log: $log"
     }
 
     return $text
