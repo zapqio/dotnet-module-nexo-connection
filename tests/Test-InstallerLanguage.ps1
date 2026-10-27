@@ -154,3 +154,7 @@ foreach ($file in 'install-nexo.ps1', 'install-nexo-build.ps1', 'update-nexo-sdk
 }
 Write-Host "PASS language selection, noninteractive fallback, password input and child script compatibility"
 Write-Host "Logs: $testRoot"
+# The child installer failures above are expected and already asserted. GitHub
+# Actions forwards LASTEXITCODE, so explicitly report the successful test result.
+# A failed assertion throws before reaching this statement.
+exit 0
