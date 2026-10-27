@@ -14,17 +14,17 @@ to the InsERT nexo SDK.
 </PropertyGroup>
 <ItemGroup>
   <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
-  <PackageReference Include="Zapqio.Nexo.Connection" Version="1.1.3" ExcludeAssets="runtime" />
+  <PackageReference Include="Zapqio.Nexo.Connection" Version="1.1.4" ExcludeAssets="runtime" />
 </ItemGroup>
 ```
 
-Target .NET 8 and x64: InsERT libraries do not load on .NET 9+. Your module ZIP should contain only
-your own DLL. On the runner, Core comes with the runner, `NexoClient` from `Nexo.Connection.zip`
+Target .NET 8 and x64: InsERT libraries do not load on .NET 9+. Package the entire publish output,
+including `nexo-module-source.zip` and `nexo-module-source.json`. On the runner, Core comes with the runner, `NexoClient` from `Nexo.Connection.zip`
 and the SDK from `Nexo.Sdk.zip`. Use the NuGet package and `Nexo.Connection.zip` from the same build
-for the target SDK. An SDK upgrade rebuilds Connection and checks existing modules' assembly
-references. Compatible modules, including Connection-only consumers deployed through Web, stay
-unchanged and need no source registration. Incompatible consumers require a rebuild; replacing
-only the SDK files can fail even when InsERT's `AssemblyVersion` is unchanged.
+for the target SDK. An SDK upgrade detects modules referencing Connection or InsERT and rebuilds
+them from their embedded sources. This also works with modules deployed through Web, preserving
+their deployment IDs and commits. Replacing only SDK files can fail even when InsERT's
+`AssemblyVersion` is unchanged.
 
 ```csharp
 using System;
@@ -71,6 +71,30 @@ version may contain a DLL compiled for a different SDK. Private variants are not
 nuget.org. Future SDK versions use the same process, provided the source still compiles against them.
 
 Runner installation and configuration: [repository README](https://github.com/zapqio/dotnet-module-nexo-connection).
+
+## Automatic source packaging (1.1.4+)
+
+Once, update the Connection reference to 1.1.4, update the runner's nexo scripts and redeploy each
+dependent module through the usual panel workflow. Thereafter no source registration or public
+NuGet version bump is needed for SDK changes. Existing ZIPs without sources require this migration;
+an assembly can identify dependencies but cannot provide the original source project.
+The installer can retain a legacy module without sources only if its assembly references still
+match the installed candidate set. This bootstraps the new private NuGet before the panel redeploy.
+It never bypasses SDK identity mismatches. Automatic updates require embedded sources by default.
+
+The publish target collects declared source/resources/content, referenced projects and custom
+MSBuild imports. For additional build inputs declare `<NexoSourceInclude Include="path" />`.
+Keep ProjectReference and linked files below a common source directory. Machine-specific generated
+runner settings, bin/obj, NuGet.Config, Config directories, appsettings, .env and private signing keys
+are excluded. Review your publish archive for custom secret files. Required generated inputs must
+be reproducible by the project; external build tools and private package feeds need configuration
+on the runner. `<NexoPackModuleSource>false</NexoPackModuleSource>` opts out and prevents automatic
+rebuilding without a separately registered local source. Web-managed modules require embedded sources.
+
+The updater preserves the original source archive across rebuilds, validates assembly identities,
+then switches the complete set under the deployment lock. Only installed ZIP checksums change in
+deployment state; IDs, source manifests, commits and reports are retained. Compilation failures
+leave the old set installed; interrupted activation is recovered on the next updater run.
 
 ## License
 

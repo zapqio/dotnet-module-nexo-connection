@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Pobiera nexoSDK z publicznego FTP InsERT (albo bierze gotowy katalog Bin), pakuje go do
-  Modules\Nexo.Sdk.zip z markerami ##Shared i ##Dll, przebudowuje Connection i zarejestrowane moduły,
+  Modules\Nexo.Sdk.zip z markerami ##Shared i ##Dll, przebudowuje Connection i zależne moduły ze źródeł w ich ZIP-ach,
   sprawdza cały zestaw, aktywuje go z kopią zapasową oraz restartuje usługę runnera.
   Wersja NuGet Connection pozostaje bez zmian; wariant SDK ma osobne lokalne źródło i cache.
 
@@ -44,7 +44,11 @@
   Katalog lub ZIP źródeł tej samej wersji Connection. Potrzebny tylko przy migracji paczki bez źródeł/commita.
 
 .PARAMETER ModulesConfig
-  Rejestr źródeł modułów. Domyślnie Config\nexo-build-sources.json; opis formatu w README.md.
+  Opcjonalny rejestr źródeł lokalnych modułów. Moduły z panelu używają źródeł w swoich ZIP-ach.
+
+.PARAMETER AllowCompatibleLegacyModules
+  Migracja instalatora: pozwala pozostawić moduły bez źródeł tylko po sprawdzeniu zgodności
+  referencji z nowym zestawem. Nie pomija błędów tożsamości SDK ani uszkodzonych źródeł.
 
 .PARAMETER PrepareOnly
   Buduje i sprawdza zestaw, ale nie zmienia zainstalowanych modułów, konfiguracji budowania ani usługi.
@@ -84,6 +88,7 @@ param(
     [string] $ConnectionSource,
     [string] $ModulesConfig,
     [switch] $PrepareOnly,
+    [switch] $AllowCompatibleLegacyModules,
     [ValidateSet('pl', 'en', 'de')][string] $Language = 'pl'
 )
 
@@ -211,6 +216,8 @@ function Write-State([string] $Result, [string] $Message) {
             finishedAt = $(if ($Result -eq 'running') { $null } else { (Get-Date).ToString('o') })
             result     = $Result
             message    = $Message
+            phase      = $updateStage
+            installed  = [bool]$setActivated
         }
         [IO.File]::WriteAllText($State, ($obj | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
     }
@@ -259,6 +266,8 @@ $temp = Join-Path $WorkDir ('sdk-' + [guid]::NewGuid().ToString('N'))
 $updateStartedAt = (Get-Date).ToString('o')
 $updateLock = $null
 $helpersLoaded = $false
+$updateStage = 'preflight'
+$setActivated = $false
 
 try {
     if (-not (Test-Path $modules)) {
@@ -275,6 +284,14 @@ try {
     if (-not $PrepareOnly) { Restore-NexoTransaction $RunnerDir }
     Write-State 'running' (Get-InstallText 'Started')
     New-Item $temp -ItemType Directory -Force | Out-Null
+    Write-Log 'Checking installed modules and their rebuild sources...'
+    $plan = New-NexoRebuildPlan $RunnerDir $temp $ModulesConfig -AllowCompatibleLegacyModules:$AllowCompatibleLegacyModules
+    $planPath = Join-Path $temp 'rebuild-plan.json'
+    Write-NexoJson $planPath $plan
+    Write-Log ("Modules selected for rebuild: " + (($plan.sources | ForEach-Object { $_.name }) -join ', '))
+    if ($plan.legacy.Count) { Write-Log ("Legacy modules require a one-time redeploy with Connection 1.1.4+: " + ($plan.legacy -join ', ') + '. They will stay installed only if their assembly references match the target set.') -IsWarning }
+    $updateStage = 'sdk'
+    Write-State 'running' 'Preparing target SDK.'
 
     if ($PSCmdlet.ParameterSetName -eq 'Download') {
         if ($Version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
@@ -327,7 +344,9 @@ try {
     # Do paczki idą biblioteki (*.dll) i zasoby (*.pak) z poziomu Bin, bez podkatalogów, programów .exe,
     # dokumentacji i pomocy: to nadzbiór tego, co niósł dotychczasowy Nexo.zip budowany przez MSBuild
     # (549 DLL + Xml.pak + Mrt.pak), a cały Bin ma 1,1 GB, z czego połowa to Subiekt.exe, libcef i Pomoc.chm.
-    $buildParameters = @{ RunnerDir = $RunnerDir; SdkDir = $SdkDir; Language = $Language }
+    $updateStage = 'build'
+    Write-State 'running' 'Rebuilding Connection and dependent modules.'
+    $buildParameters = @{ RunnerDir = $RunnerDir; SdkDir = $SdkDir; Language = $Language; RebuildPlan = $planPath }
     if ($ConnectionZip) { $buildParameters.ConnectionZip = $ConnectionZip }
     if ($ConnectionSource) { $buildParameters.ConnectionSource = $ConnectionSource }
     if ($ModulesConfig) { $buildParameters.ModulesConfig = $ModulesConfig }
@@ -339,20 +358,30 @@ try {
         return
     }
     $installedConsumers = @(Test-NexoInstalledConsumers $RunnerDir $set $temp)
+    $updateStage = 'validation'
+    Write-State 'running' 'Validating the prepared set.'
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-nexo-build.ps1') -InstallDir $RunnerDir -ServiceName $ServiceName -SetManifestPath $set.ManifestPath -ValidateOnly -NoRestart -Language $Language
     if ($LASTEXITCODE -ne 0) { throw 'The prepared build configuration failed validation; installed files were not changed.' }
-    Install-NexoSet $RunnerDir $set $ServiceName $Language -InstalledConsumers $installedConsumers
+    $updateStage = 'activation'
+    Write-State 'running' 'Activating the complete set and deployment hashes.'
+    Install-NexoSet $RunnerDir $set $ServiceName $Language -InstalledConsumers $installedConsumers -Plan $plan
+    $setActivated = $true
 
     if ($NoRestart) {
+        $updateStage = 'restartRequired'
         Write-State 'ok' (Get-InstallText 'UpdatedNoRestart' @($sdkVersion))
         Write-Log (Get-InstallText 'NoRestart' @($ServiceName))
         return
     }
     Write-Log (Get-InstallText 'Restarting' @($ServiceName))
+    $updateStage = 'restart'
+    Write-State 'running' 'Set installed; restarting the service.'
     if (-not (Restart-Runner)) {
+        $updateStage = 'restartRequired'
         Write-State 'ok' (Get-InstallText 'UpdatedNoRestart' @($sdkVersion))
         return
     }
+    $updateStage = 'complete'
     Write-State 'ok' (Get-InstallText 'UpdatedRestart' @($sdkVersion))
     Start-Sleep -Seconds 15
     $latest = Get-ChildItem (Join-Path $RunnerDir 'Logs') -File -ErrorAction SilentlyContinue |
@@ -366,8 +395,12 @@ try {
     }
 }
 catch {
-    Write-Log (Get-InstallText 'Error' @($_.Exception.Message)) -IsWarning
-    Write-State 'failed' $_.Exception.Message
+    $failure = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($failure)) { $failure = $_.ToString() }
+    if ([string]::IsNullOrWhiteSpace($failure)) { $failure = "SDK update interrupted during $updateStage." }
+    if ($setActivated) { $failure = "The complete set is installed; service restart did not finish. $failure" }
+    Write-State 'failed' $failure
+    Write-Log (Get-InstallText 'Error' @($failure)) -IsWarning
     exit 1
 }
 finally {

@@ -14,7 +14,7 @@
 		<!-- Paczka NuGet: API do kompilacji dla modułów konsumenckich (PackageReference z ExcludeAssets="runtime").
 		     W runtime Connection jest w Nexo.Connection.zip, a SDK w osobnym Nexo.Sdk.zip w Modules\ runnera. -->
 		<PackageId>Zapqio.Nexo.Connection</PackageId>
-		<Version>1.1.3</Version>
+		<Version>1.1.4</Version>
 		<!-- Tożsamość własnego zestawu pozostaje stała w ramach zgodnego API.
 		     Referencje InsERT nadal muszą pasować do SDK. Podbić przy zmianie łamiącej API. -->
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
@@ -26,7 +26,7 @@
 		<RepositoryType>git</RepositoryType>
 		<PackageReadmeFile>NUGET.md</PackageReadmeFile>
 		<PackageTags>zapqio;nexo;subiekt;integration</PackageTags>
-		<PackageReleaseNotes>Fix SDK version and path overrides in consumer projects; validate missing SDK files. Apache-2.0, Module.Core 1.2.0. No public API changes.</PackageReleaseNotes>
+		<PackageReleaseNotes>Embed module sources for automatic SDK rebuilds, including modules deployed through Web. Preserve deployment identities during transactional updates. No public API changes.</PackageReleaseNotes>
 		<Description>Shared InsERT nexo (Subiekt) connection for Zapqio Runner modules: one NexoClient singleton injected into consumer modules, plus the nexo SDK references for compiling them.</Description>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -36,12 +36,14 @@
 		     przeciw docelowemu SDK, bez zmiany wersji API/pakietu Connection. Lokalne warianty
 		     mają oddzielne źródła NuGet i cache; nie są publikowane ponownie na nuget.org. -->
 		<NexoSdkCopyLocal>false</NexoSdkCopyLocal>
+		<NexoPackModuleSource>false</NexoPackModuleSource>
 	</PropertyGroup>
 
 	<!-- Te same ustawienia i referencje SDK są pakowane dla projektów konsumenckich. -->
 	<ItemGroup>
 		<None Include="build\Zapqio.Nexo.Connection.props" Pack="true" PackagePath="build\" />
 		<None Include="build\Zapqio.Nexo.Connection.targets" Pack="true" PackagePath="build\" />
+		<None Include="build\pack-nexo-module-source.ps1" Pack="true" PackagePath="build\" />
 		<None Include="LICENSE" Pack="true" PackagePath="/" CopyToOutputDirectory="PreserveNewest" />
 		<None Include="NUGET.md" Pack="true" PackagePath="/" />
 		<!-- Skrypt podmiany SDK jedzie w zipie; NexoClient kopiuje go do katalogu runnera (automatyczna podmiana). -->
@@ -61,7 +63,7 @@
 		</PropertyGroup>
 		<ItemGroup>
 			<_NexoRootSource Include="*.cs;*.ps1;$(MSBuildProjectFile);LICENSE;NUGET.md" />
-			<_NexoBuildSource Include="build\*.props;build\*.targets" />
+			<_NexoBuildSource Include="build\*.props;build\*.targets;build\*.ps1" />
 		</ItemGroup>
 		<RemoveDir Directories="$(NexoRebuildSourceDir)" />
 		<MakeDir Directories="$(NexoRebuildSourceDir)build" />

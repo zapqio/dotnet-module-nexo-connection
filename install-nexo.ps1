@@ -199,7 +199,7 @@ $messages = @{
         SdkPresent = '==> SDK {0} już jest w {1} - bez podmiany.'
         PackingSdk = '==> Pakuję SDK z {0} do {1}...'
         DownloadingSdk = '==> Pobieram SDK InsERT nexo {0} (ok. 500 MB) i pakuję do {1}...'
-        SdkSetupFailed = 'update-nexo-sdk.ps1 zakończył się kodem {0} - SDK nie zostało zainstalowane. Popraw przyczynę z komunikatu wyżej i uruchom ponownie: {1} -Version {2} -RunnerDir {3}'
+        SdkSetupFailed = 'Aktualizacja zestawu nexo zakończyła się kodem {0}. Popraw przyczynę z komunikatu wyżej i uruchom ponownie ten sam install-nexo.ps1 z tymi samymi parametrami (także -SdkDir, jeśli był podany). Nie uruchamiaj skryptu z tymczasowego katalogu instalatora.'
         SdkMismatch = 'SDK {0} w {1} nie zgadza się z wersją Subiekta z bazy ({2}) - Sfera odrzuci połączenie. Uruchom: {3} -Version {4} -RunnerDir {5}'
         BuildSetupFailed = 'Przygotowanie budowania modułów nie powiodło się. Popraw błąd i uruchom install-nexo-build.ps1.'
         NoRestart = '==> Bez restartu (-NoRestart). Runner wczyta paczki przy następnym starcie: Restart-Service {0}'
@@ -266,7 +266,7 @@ $messages = @{
         SdkPresent = '==> SDK {0} is already in {1}; no replacement needed.'
         PackingSdk = '==> Packaging the SDK from {0} into {1}...'
         DownloadingSdk = '==> Downloading InsERT nexo SDK {0} (about 500 MB) and packaging it into {1}...'
-        SdkSetupFailed = 'update-nexo-sdk.ps1 exited with code {0}; the SDK was not installed. Fix the error above and rerun: {1} -Version {2} -RunnerDir {3}'
+        SdkSetupFailed = 'The nexo set update exited with code {0}. Fix the error above and rerun the same install-nexo.ps1 with the same parameters (including -SdkDir if supplied). Do not run a script from the temporary installer directory.'
         SdkMismatch = 'SDK {0} in {1} does not match the Subiekt database version ({2}); Sfera will reject the connection. Run: {3} -Version {4} -RunnerDir {5}'
         BuildSetupFailed = 'Build environment setup failed. Fix the error and run install-nexo-build.ps1.'
         NoRestart = '==> No restart (-NoRestart). The runner will load packages on its next start: Restart-Service {0}'
@@ -333,7 +333,7 @@ $messages = @{
         SdkPresent = '==> SDK {0} ist bereits in {1} vorhanden; kein Austausch erforderlich.'
         PackingSdk = '==> Das SDK aus {0} wird in {1} gepackt...'
         DownloadingSdk = '==> InsERT nexo SDK {0} (ca. 500 MB) wird heruntergeladen und in {1} gepackt...'
-        SdkSetupFailed = 'update-nexo-sdk.ps1 wurde mit Code {0} beendet; das SDK wurde nicht installiert. Beheben Sie den obigen Fehler und starten Sie erneut: {1} -Version {2} -RunnerDir {3}'
+        SdkSetupFailed = 'Die Aktualisierung des nexo-Satzes wurde mit Code {0} beendet. Beheben Sie den obigen Fehler und starten Sie dieselbe install-nexo.ps1 mit denselben Parametern erneut (einschließlich -SdkDir, falls angegeben). Starten Sie kein Skript aus dem temporären Installationsverzeichnis.'
         SdkMismatch = 'SDK {0} in {1} stimmt nicht mit der Subiekt-Datenbankversion ({2}) überein; Sfera wird die Verbindung ablehnen. Führen Sie aus: {3} -Version {4} -RunnerDir {5}'
         BuildSetupFailed = 'Die Einrichtung der Build-Umgebung ist fehlgeschlagen. Beheben Sie den Fehler und führen Sie install-nexo-build.ps1 aus.'
         NoRestart = '==> Kein Neustart (-NoRestart). Der Runner lädt die Pakete beim nächsten Start: Restart-Service {0}'
@@ -765,7 +765,7 @@ try {
     # The updater reuses a validated source/SDK profile when it is already ready.
     & {
         $scriptArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $updateScript,
-                        '-RunnerDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart', '-ConnectionZip', $zipPath)
+                        '-RunnerDir', $InstallDir, '-ServiceName', $ServiceName, '-NoRestart', '-ConnectionZip', $zipPath, '-AllowCompatibleLegacyModules')
         if ($ConnectionSource) { $scriptArgs += @('-ConnectionSource', (Resolve-Path -LiteralPath $ConnectionSource).Path) }
         if ($ModulesConfig) { $scriptArgs += @('-ModulesConfig', (Resolve-Path -LiteralPath $ModulesConfig).Path) }
         if ($SdkDir) {
@@ -778,7 +778,7 @@ try {
         $scriptArgs += @(Get-InstallerLanguageArguments $updateScript)
         & powershell.exe @scriptArgs
         if ($LASTEXITCODE -ne 0) {
-            throw (Get-InstallText 'SdkSetupFailed' @($LASTEXITCODE, $updateScript, $targetVersion, $InstallDir))
+            throw (Get-InstallText 'SdkSetupFailed' @($LASTEXITCODE))
         }
     }
     $setActivated = $true

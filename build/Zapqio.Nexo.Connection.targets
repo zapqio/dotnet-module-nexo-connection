@@ -34,4 +34,19 @@
            Code="ZNEXO001"
            Text="InsERT nexo SDK file not found: $(_ZapqioNexoSdkBinPath)%(_ZapqioNexoSdkAssembly.Identity).dll. Download the SDK from InsERT and install it in C:\nexoSDK_$(NexoSdkVersion)\Bin, or set nexoSdkBinPath to your SDK Bin directory. For builds on a Zapqio runner, run install-nexo.ps1. The NuGet package does not include the InsERT SDK." />
   </Target>
+
+  <!-- A published module carries its own rebuild inputs; no runner changes or
+       access to the original repository are needed on later SDK updates. -->
+  <Target Name="ZapqioPackNexoModuleSource" BeforeTargets="ComputeFilesToPublish"
+          Condition="'$(NexoPackModuleSource)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <_NexoSourceOutput>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)nexo-module-source'))</_NexoSourceOutput>
+      <_NexoSourcePacker>$(MSBuildThisFileDirectory)pack-nexo-module-source.ps1</_NexoSourcePacker>
+    </PropertyGroup>
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(_NexoSourcePacker)&quot; -Project &quot;$(MSBuildProjectFullPath)&quot; -OutputDirectory &quot;$(_NexoSourceOutput)&quot; -Configuration &quot;$(Configuration)&quot; -AssetsFile &quot;$(ProjectAssetsFile)&quot;" />
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(_NexoSourceOutput)\nexo-module-source.zip" RelativePath="nexo-module-source.zip" CopyToPublishDirectory="Always" />
+      <ResolvedFileToPublish Include="$(_NexoSourceOutput)\nexo-module-source.json" RelativePath="nexo-module-source.json" CopyToPublishDirectory="Always" />
+    </ItemGroup>
+  </Target>
 </Project>

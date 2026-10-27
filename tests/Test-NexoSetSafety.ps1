@@ -83,5 +83,48 @@ Assert (-not (Test-Path -LiteralPath (Join-Path $runner 'Modules\Nexo.Sdk.zip'))
 Assert (-not (Test-Path -LiteralPath (Join-Path $runner 'build-nexo-set.ps1'))) 'Activation failure left new tools.'
 Assert ((Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json).phase -eq 'rolledBack') 'Activation rollback could not acquire its deployment lock.'
 
-Write-Host 'PASS helper import, path containment, archive traversal, JSON roundtrip, crash recovery, backup integrity and activation rollback'
+# A failed switch of Web-managed modules restores both files and runtime hashes,
+# preserving all source identities and unrelated changes to the panel journal.
+[IO.File]::WriteAllText((Join-Path $prepared 'Output\Connection\install-nexo-build.ps1'), 'exit 0')
+$consumerZip = Join-Path $modules 'Consumer.zip'
+[IO.File]::WriteAllText($consumerZip, 'old consumer')
+[IO.File]::WriteAllText((Join-Path $prepared 'Modules\Consumer.zip'), 'new consumer')
+$statePath = Join-Path $runner 'Deployments\state.json'
+$oldHash = Get-NexoHash $consumerZip
+Write-NexoJson $statePath @{ version=1; batch=$null; installed=@(@{ manifest=@{ deploymentId='deployment-1'; packageName='Consumer'; commit=('d'*40); files=@(@{path='Consumer.cs'; sha256=('e'*64)}) }; zipSha256=$oldHash }); reports=@(@{message='before'}) }
+$original = Read-NexoDeploymentState $runner
+$identity = Get-NexoDeploymentFingerprint $original.installed[0]
+$set.modules = @('Nexo.Sdk','Nexo.Connection','Consumer')
+$set | Add-Member sources @(@{name='Consumer'; sourceHash=('f'*64)})
+$inventory = @(Get-ChildItem $modules -Filter '*.zip' | ForEach-Object { @{name=$_.BaseName; sha256=(Get-NexoHash $_.FullName); deployment=$(if ($_.BaseName -eq 'Consumer') { @{deploymentId='deployment-1'; manifestHash=$identity} } else { $null })} })
+$plan = @{schemaVersion=1; inventory=$inventory; sources=@(@{name='Consumer'; embedded=$true; sourceHash=('f'*64)})}
+Install-NexoSet $runner $set 'NexoSafetyFixture_NotAService' 'en' -Plan $plan
+$installedState = Read-NexoDeploymentState $runner
+Assert ($installedState.installed[0].zipSha256 -eq (Get-NexoHash $consumerZip)) 'Managed runtime checksum was not updated.'
+Assert ((Get-NexoDeploymentFingerprint $installedState.installed[0]) -eq $identity) 'Managed source identity was changed.'
+# Simulate process death just before committing the journal. Reports may have
+# been appended independently; recovery must not restore a whole stale state.json.
+$journal = Get-Content $journalPath -Raw | ConvertFrom-Json
+$journal.phase = 'switching'
+Write-NexoJson $journalPath $journal
+$installedState.reports += [pscustomobject]@{message='after'}
+Write-NexoJson $statePath $installedState
+Restore-NexoTransaction $runner
+$recovered = Read-NexoDeploymentState $runner
+Assert ((Get-NexoHash $consumerZip) -eq $oldHash -and $recovered.installed[0].zipSha256 -eq $oldHash) 'Interrupted managed update did not restore files and hash together.'
+Assert ($recovered.reports.Count -eq 2 -and $recovered.reports[1].message -eq 'after') 'Recovery overwrote unrelated reports.'
+Restore-NexoTransaction $runner
+# A newer panel deployment must never be overwritten by recovery.
+$journal.phase = 'switching'
+Write-NexoJson $journalPath $journal
+$recovered.installed[0].manifest.deploymentId = 'new-deployment'
+Write-NexoJson $statePath $recovered
+Expect-Failure { Restore-NexoTransaction $runner } 'Recovery overwrote a newer deployment.'
+Assert ((Read-NexoDeploymentState $runner).installed[0].manifest.deploymentId -eq 'new-deployment') 'New deployment ID was lost.'
+$journal.phase = 'rolledBack'
+Write-NexoJson $journalPath $journal
+foreach ($phase in 'Requested','Approved','Preparing','Switching','Loading') {
+    Expect-Failure { Assert-NexoDeploymentIdle ([pscustomobject]@{batch=@{phase=$phase}}) } "Accepted active batch $phase"
+}
+Write-Host 'PASS paths, archives, activation rollback, managed hash recovery, preserved reports and concurrent deployment protection'
 Write-Host "Fixtures: $root"

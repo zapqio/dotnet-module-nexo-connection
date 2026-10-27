@@ -148,4 +148,35 @@ Expect-Failure { Install-NexoSet $runner $set 'NexoConsumerFixture_NotAService' 
 Assert ((Get-NexoHash (Join-Path $runner 'nexo-build.json')) -eq $activeHash) 'Rejected activation changed the active set.'
 Assert ((Get-NexoHash $statePath) -eq $stateHash) 'Rejected activation changed Web state.'
 Write-Host 'PASS concurrent module changes prevent activation'
+# Automatic source planning must reject every legacy consumer in one preflight.
+[IO.File]::Delete($statePath)
+[IO.File]::Delete($bonyZip)
+New-FixtureZip $bonyZip @($bonyDll)
+New-FixtureZip $directZip @($oldDirectDll)
+$sourceError = ''
+try { New-NexoRebuildPlan $runner $work '' | Out-Null } catch { $sourceError = $_.Exception.Message }
+Assert ($sourceError.Contains('DlaKobiet.Bony:') -and $sourceError.Contains('Direct.Consumer:') -and $sourceError.Contains('Missing embedded sources')) 'Preflight must aggregate all missing source modules.'
+$migrationPlan = New-NexoRebuildPlan $runner $work '' -AllowCompatibleLegacyModules
+Assert ($migrationPlan.sources.Count -eq 0 -and $migrationPlan.legacy.Count -eq 2) 'Installer migration did not identify legacy modules.'
+Expect-Failure { Test-NexoInstalledConsumers $runner $set $work } 'Module Direct.Consumer has an incompatible assembly reference'
+[IO.File]::Delete($directZip)
+$packagedSource = Join-Path $root 'source-package'
+[void][IO.Directory]::CreateDirectory($packagedSource)
+[IO.File]::Copy($bonyDll, (Join-Path $packagedSource 'DlaKobiet.Bony.dll'))
+$sourceProject = Join-Path $root 'source-input'
+[void][IO.Directory]::CreateDirectory($sourceProject)
+[IO.File]::WriteAllText((Join-Path $sourceProject 'Module.csproj'), '<Project/>')
+$archive = Join-Path $packagedSource 'nexo-module-source.zip'
+[IO.Compression.ZipFile]::CreateFromDirectory($sourceProject, $archive)
+Write-NexoJson (Join-Path $packagedSource 'nexo-module-source.json') @{schemaVersion=1; project='Module.csproj'; sha256=(Get-NexoHash $archive)}
+[IO.File]::Delete($bonyZip)
+[IO.Compression.ZipFile]::CreateFromDirectory($packagedSource, $bonyZip)
+$plan = New-NexoRebuildPlan $runner $work ''
+Assert ($plan.sources.Count -eq 1 -and $plan.sources[0].embedded -and $plan.sources[0].name -eq 'DlaKobiet.Bony') 'Connection-only module was not automatically selected with embedded sources.'
+Write-NexoJson (Join-Path $packagedSource 'nexo-module-source.json') @{schemaVersion=1; project='Module.csproj'; sha256=('0'*64)}
+[IO.File]::Delete($bonyZip)
+[IO.Compression.ZipFile]::CreateFromDirectory($packagedSource, $bonyZip)
+Expect-Failure { New-NexoRebuildPlan $runner $work '' } 'Invalid or damaged embedded source archive'
+Expect-Failure { New-NexoRebuildPlan $runner $work '' -AllowCompatibleLegacyModules } 'Invalid or damaged embedded source archive'
+Write-Host 'PASS automatic dependency/source discovery, aggregated migration errors and damaged source rejection'
 Write-Host "Fixtures: $root"

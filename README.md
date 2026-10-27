@@ -86,7 +86,7 @@ Bez pytań, wszystko z parametrów:
 | `-SubiektVersion` | Wersja z „Pomoc > O programie” (np. `61.1.1`) zamiast odczytu z bazy. |
 | `-SdkDir` | Gotowy katalog `Bin` rozpakowanego SDK zamiast pobierania z FTP. |
 | `-PackagePath` | Lokalny `Nexo.Connection.zip` zamiast pobierania z GitHuba. Zależności budowania są nadal pobierane z nuget.org. |
-| `-Version` | Konkretny release modułu, np. `1.1.3`; domyślnie najnowszy. |
+| `-Version` | Konkretny release modułu, np. `1.1.4`; domyślnie najnowszy. |
 | `-ConnectionSource` | Katalog lub ZIP źródeł wybranej wersji Connection; opcjonalny przy migracji starszego wydania. |
 | `-ModulesConfig` | Rejestr źródeł modułów; domyślnie `Config\nexo-build-sources.json`. |
 | `-InstallDir`, `-ServiceName` | Katalog i usługa runnera; domyślnie `C:\zapqio\runner` i `ZapqioRunner`. |
@@ -169,7 +169,7 @@ Połączenie powstaje przy pierwszym użyciu `Uchwyt`; w logu zadania widać wte
 Sfera wymaga SDK w tej samej wersji co Subiekt. Po aktualizacji Subiekta pierwsze zadanie Nexo kończy
 się błędem `... Wersja bazy danych to X ...`, a `NexoClient` uruchamia w tle `update-nexo-sdk.ps1 -Version X`.
 Skrypt pobiera SDK z FTP InsERT i przygotowuje spójny zestaw: SDK, Connection, lokalny NuGet oraz
-moduły z zarejestrowanych źródeł. Dopiero po kompilacji i sprawdzeniu referencji podmienia pliki
+zależne moduły ze źródeł zawartych w ich paczkach. Dopiero po kompilacji i sprawdzeniu referencji podmienia pliki
 i restartuje usługę. Zadania przerwane restartem trzeba ponowić z panelu.
 
 - Przebieg jest w `Logs\nexo-sdk-update.log`, stan w `nexo-sdk-update.json` w katalogu runnera.
@@ -212,13 +212,32 @@ jednorazowo pobrać źródła z GitHuba według pełnego commita zapisanego w DL
 podaj `-ConnectionSource <katalog lub ZIP>` z tą samą wersją projektu. Nie pobiera bieżącego `main`
 jako zamiennika kodu starszego Connection. Po przebudowie ZIP niesie już źródła do kolejnych aktualizacji.
 
-Moduły korzystające ze zgodnego API Connection mogą pozostać bez przebudowy, także gdy wdrażasz
-je przez panel Web. Updater sprawdza ich rzeczywiste referencje do Connection i InsERT; samo
-odwołanie do `Nexo.Connection` nie wymaga źródeł modułu. ZIP modułu i jego stan wdrożenia w Webie
-pozostają bez zmian. Sprawdzenie tożsamości bibliotek nie zastępuje testu działania modułu,
-jeśli nowe SDK zmieniło używane API przy zachowaniu tej samej tożsamości biblioteki.
+**Migracja jednorazowa:** zainstaluj nowe skrypty i Connection 1.1.4, ustaw w modułach
+`Zapqio.Nexo.Connection` 1.1.4 i ponownie wdróż je przez panel. Target NuGet dodaje do wyniku
+`dotnet publish` pliki `nexo-module-source.zip` i `nexo-module-source.json`. Paczka wdrożeniowa
+musi zachować te pliki. Nie trzeba rejestrować źródeł modułów z panelu ani zmieniać wersji NuGet
+przy kolejnych SDK 63, 64 itd., o ile kod nadal się kompiluje i działa z danym SDK.
 
-Jeśli chcesz również przebudowywać własne moduły lokalnie, zarejestruj je raz w
+Pierwszy `install-nexo.ps1` może pozostawić stare moduły bez źródeł, **wyłącznie jeśli ich
+referencje są zgodne z instalowanym zestawem**. Pozwala to najpierw przygotować prywatny NuGet 1.1.4
+dla aktualnego SDK, a następnie wdrożyć moduły z panelu. Jeśli stare DLL są już niezgodne z SDK,
+najpierw przebuduj i wdróż je przez panel/CI; instalator nadal blokuje taki niezgodny zestaw.
+Automatyczne aktualizacje wymagają źródeł — wyjątek migracyjny instalatora nie jest domyślnym trybem
+`update-nexo-sdk.ps1` (`-AllowCompatibleLegacyModules` włącza go jawnie).
+
+Updater skanuje referencje DLL w zainstalowanych ZIP-ach. Moduły używające Connection lub InsERT
+przebudowuje ze źródeł dołączonych do tej konkretnej paczki, bez pobierania nowszego commita.
+Brak lub uszkodzenie źródeł zgłasza dla wszystkich znalezionych modułów przed pobraniem SDK.
+Moduły niezwiązane z nexo pozostają bez zmian. Samo DLL pozwala wykryć zależność, ale nie zastępuje
+projektu źródłowego potrzebnego do kompilacji.
+
+Archiwum obejmuje pliki projektu, zadeklarowany kod i zasoby, `ProjectReference` oraz własne importy
+MSBuild. Dodatkowe wejścia budowania można wskazać przez `<NexoSourceInclude Include="ścieżka" />`.
+Nie obejmuje bin/obj, konfiguracji runnera, NuGet.Config, appsettings, .env ani kluczy prywatnych.
+Projekt musi odtwarzać swoje pliki generowane; nietypowe narzędzia i prywatne zależności wymagają
+konfiguracji środowiska budowania. Nie umieszczaj sekretów w plikach źródłowych ani zasobach.
+
+Dla modułów instalowanych lokalnie nadal można jawnie wskazać źródła w
 `Config\nexo-build-sources.json`:
 
 ```json
@@ -263,11 +282,13 @@ ZIP-y, konfigurację budowania i skrypty; przerwaną podmianę odzyskuje kolejne
 Restart następuje po zatwierdzeniu zestawu. Nieudany restart pozostawia spójny nowy zestaw na dysku
 i zgłasza błąd. `-NoRestart` wymaga późniejszego restartu, aby proces wczytał nowe biblioteki.
 
-Jeśli moduł zarządzany przez Web rzeczywiście wymaga przebudowy, jego nowy artefakt należy wdrożyć
-przez Web. Updater blokuje bezpośrednie zastąpienie takiego modułu, aby nie rozjechać sum plików
-z historią wdrożeń runnera; zgodny moduł pozostawiany bez zmian nie blokuje aktualizacji SDK
-i Connection. `-PrepareOnly` jest dostępne także dla takich instalacji. Ten zakres zmian nie dodaje
-koordynacji całego wdrożenia SDK przez Web i nie modyfikuje Runnera.
+Moduły z panelu są przebudowywane wyłącznie z zatwierdzonych, zainstalowanych źródeł w ich ZIP-ach.
+Pod blokadą `Deployments\state.lock` skrypt sprawdza, czy podczas kompilacji panel nie wdrożył
+innej wersji. Następnie podmienia kompletny zestaw i aktualizuje tylko `installed[].zipSha256`
+w `Deployments\state.json`. Identyfikatory wdrożeń, commity, manifesty źródeł i raporty zostają
+zachowane. Wycofanie aktualizacji przywraca również te sumy, bez cofania pozostałych danych panelu.
+Równoległa zmiana wdrożenia zatrzymuje aktywację i wymaga ponowienia. Runner i Web nie wymagają
+zmian kodu. Nie powstaje osobne wdrożenie w historii panelu dla lokalnej zmiany SDK.
 
 ## Własny moduł na Nexo.Connection
 
@@ -288,7 +309,7 @@ Wzorzec: [dotnet-module-nexo-test](https://github.com/zapqio/dotnet-module-nexo-
     <!-- Obie paczki tylko do kompilacji: w runtime kontrakt dostarcza runner, NexoClient przychodzi
          z zipa Nexo.Connection, SDK z zipa Nexo.Sdk. Do zipa tego modułu trafia tylko jego własna DLL. -->
     <PackageReference Include="Zapqio.Runner.Module.Core" Version="1.2.0" ExcludeAssets="runtime" />
-    <PackageReference Include="Zapqio.Nexo.Connection" Version="1.1.3" ExcludeAssets="runtime" />
+    <PackageReference Include="Zapqio.Nexo.Connection" Version="1.1.4" ExcludeAssets="runtime" />
   </ItemGroup>
   <Target Name="ZipAfterPublish" AfterTargets="Publish">
     <PropertyGroup>
@@ -491,15 +512,16 @@ Odzyskiwanie przerwanej aktualizacji, kontrola ścieżek i integralności kopii 
 .\tests\Test-NexoSetSafety.ps1
 ```
 
-Zachowanie modułu z panelu używającego tylko Connection przy zmianie klucza podpisu SDK,
-wykrywanie niezgodnych referencji i zmian modułów podczas aktualizacji (offline, .NET SDK, tylko TEMP):
+Walidacja referencji, wykrywanie źródeł modułów, zgłaszanie wszystkich brakujących archiwów,
+odrzucanie uszkodzonych źródeł i zmian wdrożenia podczas aktualizacji (offline, tylko TEMP):
 
 ```powershell
 .\tests\Test-NexoInstalledConsumers.ps1
 ```
 
-Pełna przebudowa z konsumentem, niezmienionym `PackageReference`, izolacją cache, aktywacją,
-ochroną modułów zarządzanych przez Web i ponownym użyciem zestawu (bez prawdziwej usługi i SQL):
+Pełna przebudowa Connection i dwóch modułów zarządzanych przez Web, z niezmienionym
+`PackageReference`, izolacją cache, aktywacją, zachowaniem tożsamości wdrożeń, ponownym użyciem
+zestawu i obsługą błędu kompilacji (bez prawdziwej usługi i SQL):
 
 ```powershell
 .\tests\Test-NexoSdkRebuild.ps1 -SdkDir 'C:\nexoSDK_62.0.0.9537\Bin' `
@@ -513,7 +535,7 @@ DLL wejściowa musi mieć tę samą wersję, co bieżące źródła. `-PreviousS
 Paczki (to samo robi workflow wydania; wymaga .NET SDK i nuget.org):
 
 ```powershell
-.\tests\Test-NuGetPackage.ps1 -PackagePath bin\Release\Zapqio.Nexo.Connection.1.1.3.nupkg `
+.\tests\Test-NuGetPackage.ps1 -PackagePath bin\Release\Zapqio.Nexo.Connection.1.1.4.nupkg `
     -RuntimeZipPath bin\Release\Nexo.Connection.zip -SdkBinPath C:\nexoSDK_61.1.0.9431\Bin
 ```
 

@@ -69,6 +69,7 @@ try {
     [xml]$props = Read-Entry $package 'build/Zapqio.Nexo.Connection.props'
     $defaultVersion = $props.Project.PropertyGroup.NexoSdkVersion.InnerText
     [void](Read-Entry $package 'build/Zapqio.Nexo.Connection.targets')
+    [void](Read-Entry $package 'build/pack-nexo-module-source.ps1')
     [void](Read-Entry $package 'LICENSE')
     [void](Read-Entry $package 'NUGET.md')
     [void](Read-Entry $runtime 'LICENSE')
@@ -198,12 +199,44 @@ if ($missing -notmatch 'ZNEXO001' -or -not $missing.Contains($customPath)) {
 Write-Host 'PASS missing-sdk'
 $realPathProperty = '<nexoSdkBinPath>' + [Security.SecurityElement]::Escape($SdkBinPath.TrimEnd('\', '/')) + '</nexoSdkBinPath>'
 $consumer = New-Probe 'consumer' $realPathProperty
+# Preserve sibling ProjectReference, ancestor imports and explicit custom inputs.
+$library = Join-Path $testRoot 'linked-library'
+[void][IO.Directory]::CreateDirectory($library)
+[IO.File]::WriteAllText((Join-Path $library 'Linked.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
+[IO.File]::WriteAllText((Join-Path $library 'Linked.cs'), 'public class Linked { }')
+[IO.File]::WriteAllText((Join-Path $testRoot 'Directory.Build.props'), '<Project><PropertyGroup><DefineConstants>$(DefineConstants);SOURCE_IMPORT_TEST</DefineConstants></PropertyGroup></Project>')
+$projectText = [IO.File]::ReadAllText($consumer).Replace('</Project>', '<ItemGroup><ProjectReference Include="..\linked-library\Linked.csproj"/><NexoSourceInclude Include="custom.input"/></ItemGroup></Project>')
+$nonInput = Join-Path $testRoot 'not-a-build-input.txt'
+[IO.File]::WriteAllText($nonInput, 'not part of the module')
+$projectText = $projectText.Replace('</Project>', ('<!--' + [Environment]::NewLine + $nonInput + [Environment]::NewLine + '--></Project>'))
+[IO.File]::WriteAllText($consumer, $projectText)
+$consumerRoot = Split-Path $consumer -Parent
+[IO.File]::WriteAllText((Join-Path $consumerRoot 'custom.input'), 'required input')
+[IO.File]::WriteAllText((Join-Path $consumerRoot 'Theme.xaml'), '<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />')
+[IO.File]::WriteAllText((Join-Path $consumerRoot 'dotnet-publish.log'), 'generated log excluded from source')
+[IO.File]::WriteAllText((Join-Path $consumerRoot '.env'), 'fixture secret')
+[IO.File]::WriteAllText((Join-Path $consumerRoot 'appsettings.json'), '{"fixture":"private"}')
+[void](Invoke-Dotnet 'consumer-rerestore' @('restore', $consumer, '-p:NuGetAudit=false'))
 $publish = Join-Path $testRoot 'consumer-publish'
 [void](Invoke-Dotnet 'consumer-publish' @('publish', $consumer, '--no-restore', '-c', 'Release', '-o', $publish, '--nologo'))
 $forbidden = @(Get-ChildItem -LiteralPath $publish -File | Where-Object { $_.Name -like 'InsERT.*' -or $_.Name -in @('Nexo.Connection.dll', 'Zapqio.Runner.Module.Core.dll') })
 if ($forbidden.Count -gt 0) {
     throw "Consumer includes shared DLLs: $($forbidden.Name -join ', ')"
 }
+$sourceDescription = Get-Content -LiteralPath (Join-Path $publish 'nexo-module-source.json') -Raw | ConvertFrom-Json
+$sourceArchive = Join-Path $publish 'nexo-module-source.zip'
+Assert-Equal $sourceDescription.sha256 (Get-FileHash -LiteralPath $sourceArchive -Algorithm SHA256).Hash.ToLowerInvariant() 'Embedded source checksum.'
+Assert-Equal $sourceDescription.project 'consumer/Probe.csproj' 'Relative source project.'
+$sourceZip = [IO.Compression.ZipFile]::OpenRead($sourceArchive)
+try {
+    foreach ($path in 'consumer/Probe.csproj', 'consumer/Probe.cs', 'consumer/Theme.xaml', 'consumer/custom.input', 'linked-library/Linked.csproj', 'linked-library/Linked.cs', 'Directory.Build.props') { [void](Read-Entry $sourceZip $path) }
+    foreach ($entry in $sourceZip.Entries) { if ($entry.FullName -match '(?i)(^|/)(bin|obj|packages)/|\.env|appsettings|NuGet\.Config|\.log$') { throw "Private/generated file in source: $($entry.FullName)" } }
+    if ($sourceZip.GetEntry('not-a-build-input.txt')) { throw 'A comment was mistaken for an MSBuild import.' }
+}
+finally { $sourceZip.Dispose() }
+$sourceHash = $sourceDescription.sha256
+[void](Invoke-Dotnet 'consumer-repeat-publish' @('publish', $consumer, '--no-restore', '-c', 'Release', '-o', $publish, '--nologo'))
+Assert-Equal (Get-FileHash -LiteralPath $sourceArchive -Algorithm SHA256).Hash.ToLowerInvariant() $sourceHash 'Source packaging must be deterministic.'
 
-Write-Host "PASS consumer-publish and archive validation ($version)"
+Write-Host "PASS consumer publish, linked project/imports, exclusions, deterministic source archive ($version)"
 Write-Host "Logs and isolated cache: $testRoot"

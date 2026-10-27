@@ -23,6 +23,7 @@ param(
     [string]$ConnectionSource,
     [string]$ModulesConfig,
     [string]$OutputRoot,
+    [string]$RebuildPlan,
     [ValidateSet('pl', 'en', 'de')][string]$Language = 'pl',
     [switch]$FunctionsOnly,
     [string]$InspectAssembly
@@ -246,6 +247,158 @@ function Copy-NexoAtomic([string]$Source, [string]$Destination) {
     finally { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } }
 }
 
+function Get-NexoDeploymentFingerprint($Installed) {
+    return Get-NexoTextHash ($Installed.manifest | ConvertTo-Json -Depth 30 -Compress)
+}
+
+function Read-NexoDeploymentState([string]$RunnerDir) {
+    $path = Get-NexoChildPath $RunnerDir 'Deployments/state.json'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $state = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($state.version -ne 1) { throw 'Unsupported deployment state version; SDK update was not applied.' }
+    return $state
+}
+
+function Assert-NexoDeploymentIdle($State) {
+    if ($State -and $State.batch.phase -in 'Requested', 'Approved', 'Preparing', 'Switching', 'Loading') {
+        throw 'A runner deployment is in progress. Retry the SDK update after it finishes.'
+    }
+}
+
+function Read-NexoModuleSource([string]$PackageRoot, [string]$Destination) {
+    $description = Join-Path $PackageRoot 'nexo-module-source.json'
+    $archive = Join-Path $PackageRoot 'nexo-module-source.zip'
+    if (-not (Test-Path -LiteralPath $description) -or -not (Test-Path -LiteralPath $archive)) {
+        throw 'Missing embedded sources. Update the Connection NuGet to 1.1.4 or later and deploy this module once with source packaging enabled.'
+    }
+    $metadata = Get-Content -LiteralPath $description -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($metadata.schemaVersion -ne 1 -or $metadata.sha256 -notmatch '^[a-f0-9]{64}$' -or (Get-NexoHash $archive) -ne $metadata.sha256) { throw 'Invalid or damaged embedded source archive.' }
+    Expand-NexoZip $archive $Destination
+    $project = Get-NexoChildPath $Destination $metadata.project
+    if ([IO.Path]::GetExtension($project) -ne '.csproj' -or -not (Test-Path -LiteralPath $project -PathType Leaf)) { throw 'Embedded source project is missing or invalid.' }
+    return $metadata
+}
+
+function New-NexoRebuildPlan([string]$RunnerDir, [string]$Work, [string]$ModulesConfig, [switch]$AllowCompatibleLegacyModules) {
+    if (-not $ModulesConfig) { $ModulesConfig = Join-Path $RunnerDir 'Config\nexo-build-sources.json' }
+    $config = if (Test-Path -LiteralPath $ModulesConfig) { Get-Content -LiteralPath $ModulesConfig -Raw -Encoding UTF8 | ConvertFrom-Json } else { [pscustomobject]@{ modules = @() } }
+    $specs = @{}
+    foreach ($spec in $config.modules) {
+        if ($spec.packageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $spec.packageName.Contains('..') -or $spec.packageName -in 'Nexo.Sdk', 'Nexo.Connection' -or $specs.ContainsKey($spec.packageName)) { throw "Invalid or duplicate packageName: $($spec.packageName)" }
+        $specs[$spec.packageName] = $spec
+    }
+    $planRoot = Get-NexoChildPath $Work ('modules-' + [guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($planRoot)
+    $deployments = Get-NexoChildPath $RunnerDir 'Deployments'
+    [void][IO.Directory]::CreateDirectory($deployments)
+    $lock = [IO.File]::Open((Join-Path $deployments 'state.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $inventory = @()
+    try {
+        $state = Read-NexoDeploymentState $RunnerDir
+        Assert-NexoDeploymentIdle $state
+        foreach ($zip in Get-ChildItem -LiteralPath (Join-Path $RunnerDir 'Modules') -Filter '*.zip' -File | Sort-Object Name) {
+            $record = @($state.installed | Where-Object { $_.manifest.packageName -eq $zip.BaseName })
+            if ($record.Count -gt 1) { throw "Duplicate deployment record for $($zip.BaseName)." }
+            $hash = Get-NexoHash $zip.FullName
+            $deployment = $null
+            if ($record.Count -eq 1) {
+                if ($record[0].zipSha256 -ne $hash) { throw "Installed $($zip.BaseName) differs from its deployment record. Restore the approved package before updating SDK." }
+                $deployment = @{ deploymentId = $record[0].manifest.deploymentId; manifestHash = (Get-NexoDeploymentFingerprint $record[0]) }
+            }
+            $snapshot = $null
+            if ($zip.BaseName -notin 'Nexo.Sdk', 'Nexo.Connection') {
+                $snapshot = Get-NexoChildPath $planRoot $zip.Name
+                [IO.File]::Copy($zip.FullName, $snapshot)
+                if ((Get-NexoHash $snapshot) -ne $hash) { throw "Module $($zip.BaseName) changed while copying sources." }
+            }
+            $inventory += [pscustomobject]@{ name = $zip.BaseName; sha256 = $hash; deployment = $deployment; snapshot = $snapshot }
+        }
+    }
+    finally { $lock.Dispose() }
+    $sources = @()
+    $legacy = @()
+    $problems = @()
+    foreach ($item in $inventory) {
+        if (-not $item.snapshot) { continue }
+        try {
+            $unpack = Get-NexoChildPath $planRoot ($item.name + '-package')
+            Expand-NexoZip $item.snapshot $unpack
+            $dependent = $specs.ContainsKey($item.name)
+            foreach ($dll in Get-ChildItem -LiteralPath $unpack -Filter '*.dll' -File) {
+                $metadata = Get-NexoAssemblyMetadata $dll.FullName
+                if ($metadata.native) { continue }
+                if ($metadata.identity -like 'InsERT.*' -or $metadata.identity -like 'Nexo.Connection,*') { throw "Contains private shared library $($dll.Name); publish without private Connection/SDK DLLs." }
+                if (@($metadata.references | Where-Object { $_ -like 'Nexo.Connection,*' -or $_ -like 'InsERT.*' }).Count) { $dependent = $true }
+            }
+            if (-not $dependent) { continue }
+            $source = Get-NexoChildPath $planRoot ($item.name + '-source')
+            $embedded = $true
+            if ($specs.ContainsKey($item.name) -and -not $item.deployment) {
+                $spec = $specs[$item.name]
+                Get-NexoSourceSnapshot $spec (Split-Path (Resolve-NexoPath $ModulesConfig) -Parent) $source $planRoot
+                $project = $spec.project
+                $embedded = $false
+            }
+            else {
+                if ($AllowCompatibleLegacyModules -and -not (Test-Path -LiteralPath (Join-Path $unpack 'nexo-module-source.zip')) -and -not (Test-Path -LiteralPath (Join-Path $unpack 'nexo-module-source.json'))) {
+                    # One-time installer migration: unchanged legacy modules are
+                    # still checked against the target assemblies before activation.
+                    # Corrupt/incomplete source packages never use this exception.
+                    $legacy += $item.name
+                    continue
+                }
+                $description = Read-NexoModuleSource $unpack $source
+                $project = $description.project
+            }
+            $projectPath = Get-NexoChildPath $source $project
+            if ([IO.Path]::GetExtension($projectPath) -ne '.csproj' -or -not (Test-Path -LiteralPath $projectPath)) { throw 'Invalid module project.' }
+            $sources += [pscustomobject]@{ name = $item.name; source = $source; project = $project; sourceHash = (Get-NexoTreeHash $source); embedded = $embedded; archive = (Join-Path $unpack 'nexo-module-source.zip'); description = (Join-Path $unpack 'nexo-module-source.json') }
+        }
+        catch { $problems += "$($item.name): $($_.Exception.Message)" }
+    }
+    foreach ($name in $specs.Keys) {
+        if ($name -in $inventory.name) { continue }
+        try {
+            $source = Get-NexoChildPath $planRoot ($name + '-source')
+            Get-NexoSourceSnapshot $specs[$name] (Split-Path (Resolve-NexoPath $ModulesConfig) -Parent) $source $planRoot
+            $project = $specs[$name].project
+            if (-not (Test-Path -LiteralPath (Get-NexoChildPath $source $project)) -or [IO.Path]::GetExtension($project) -ne '.csproj') { throw 'Invalid module project.' }
+            $sources += [pscustomobject]@{ name = $name; source = $source; project = $project; sourceHash = (Get-NexoTreeHash $source); embedded = $false }
+        }
+        catch { $problems += "${name}: $($_.Exception.Message)" }
+    }
+    if ($problems.Count) { throw ("Cannot prepare automatic SDK rebuild:`n - " + ($problems -join "`n - ")) }
+    return [pscustomobject]@{ schemaVersion = 1; inventory = $inventory; sources = @($sources | Sort-Object name); legacy = $legacy }
+}
+
+function Assert-NexoRebuildPlanCurrent([string]$RunnerDir, $Plan, $State) {
+    if ($Plan.schemaVersion -ne 1) { throw 'Invalid SDK rebuild plan.' }
+    $current = @(Get-ChildItem -LiteralPath (Join-Path $RunnerDir 'Modules') -Filter '*.zip' -File)
+    if ($current.Count -ne @($Plan.inventory).Count) { throw 'Installed modules changed during rebuild. Retry the SDK update.' }
+    foreach ($zip in $current) {
+        $expected = @($Plan.inventory | Where-Object { $_.name -eq $zip.BaseName })
+        if ($expected.Count -ne 1 -or (Get-NexoHash $zip.FullName) -ne $expected[0].sha256) { throw "Module $($zip.BaseName) changed during rebuild. Retry the SDK update." }
+        $record = @($State.installed | Where-Object { $_.manifest.packageName -eq $zip.BaseName })
+        if ($expected[0].deployment) {
+            if ($record.Count -ne 1 -or (Get-NexoDeploymentFingerprint $record[0]) -ne $expected[0].deployment.manifestHash -or $record[0].zipSha256 -ne $expected[0].sha256) { throw "Deployment of $($zip.BaseName) changed during rebuild. Retry the SDK update." }
+        }
+        elseif ($record.Count) { throw "Module $($zip.BaseName) became Web-managed during rebuild. Retry the SDK update." }
+    }
+}
+
+function Set-NexoDeploymentHashes([string]$RunnerDir, $Changes, [switch]$Restore, [switch]$ValidateOnly) {
+    if (-not $Changes) { return }
+    $state = Read-NexoDeploymentState $RunnerDir
+    if (-not $state) { throw 'Deployment state is missing; cannot recover module hashes.' }
+    foreach ($change in $Changes) {
+        if ($change.beforeHash -notmatch '^[a-f0-9]{64}$' -or $change.afterHash -notmatch '^[a-f0-9]{64}$') { throw 'Invalid deployment hash in SDK journal.' }
+        $record = @($state.installed | Where-Object { $_.manifest.packageName -eq $change.packageName })
+        if ($record.Count -ne 1 -or $record[0].manifest.deploymentId -ne $change.deploymentId -or (Get-NexoDeploymentFingerprint $record[0]) -ne $change.manifestHash -or $record[0].zipSha256 -notin @($change.beforeHash, $change.afterHash)) { throw "Deployment of $($change.packageName) changed; refusing to overwrite its state." }
+        $record[0].zipSha256 = if ($Restore) { $change.beforeHash } else { $change.afterHash }
+    }
+    if (-not $ValidateOnly) { Write-NexoJson (Get-NexoChildPath $RunnerDir 'Deployments/state.json') $state }
+}
+
 function Restore-NexoTransaction([string]$RunnerDir, [switch]$DeploymentLockHeld) {
     $journalPath = Get-NexoChildPath $RunnerDir 'Build/nexo-update-journal.json'
     if (-not (Test-Path -LiteralPath $journalPath)) { return }
@@ -258,6 +411,7 @@ function Restore-NexoTransaction([string]$RunnerDir, [switch]$DeploymentLockHeld
             [void][IO.Directory]::CreateDirectory($deployments)
             $recoveryLock = [IO.File]::Open((Join-Path $deployments 'state.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         }
+        Set-NexoDeploymentHashes $RunnerDir $journal.deployments -Restore -ValidateOnly
         # Validate every backup before restoring any file.
         foreach ($file in $journal.files) {
             if ($file.path.Contains('..') -or $file.path -notmatch '^(Modules/[A-Za-z0-9][A-Za-z0-9._-]*\.zip|Deployments/(NuGet.Config|Directory.Build.props)|nexo-(sdk|build)\.json|(update-nexo-sdk|install-nexo-build|build-nexo-set)\.ps1)$') { throw 'Invalid SDK update journal target.' }
@@ -266,12 +420,14 @@ function Restore-NexoTransaction([string]$RunnerDir, [switch]$DeploymentLockHeld
                 $backup = Get-NexoChildPath (Join-Path $RunnerDir 'Build/NexoTransactions') $file.backup
                 if ((Get-NexoHash $backup) -ne $file.sha256) { throw "Damaged SDK update backup: $backup" }
             }
+            if ($file.newSha256 -and (Test-Path -LiteralPath $target) -and (Get-NexoHash $target) -notin @($file.sha256, $file.newSha256)) { throw "File changed after interrupted SDK update; refusing to overwrite $($file.path)." }
         }
         foreach ($file in $journal.files) {
             $target = Get-NexoChildPath $RunnerDir $file.path
             if ($file.existed) { Copy-NexoAtomic (Get-NexoChildPath (Join-Path $RunnerDir 'Build/NexoTransactions') $file.backup) $target }
             elseif ([IO.File]::Exists($target)) { [IO.File]::Delete($target) }
         }
+        Set-NexoDeploymentHashes $RunnerDir $journal.deployments -Restore
         $journal.phase = 'rolledBack'
         Write-NexoJson $journalPath $journal
         Write-Host 'Restored the previous nexo files after an interrupted or failed activation.'
@@ -308,24 +464,30 @@ function Test-NexoInstalledConsumers([string]$RunnerDir, $Set, [string]$Work) {
     }
 }
 
-function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string]$Language, [object[]]$InstalledConsumers = $null) {
+function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string]$Language, [object[]]$InstalledConsumers = $null, $Plan = $null) {
     $deploymentLock = $null
     $journalPath = Get-NexoChildPath $RunnerDir 'Build/nexo-update-journal.json'
     $deployments = Get-NexoChildPath $RunnerDir 'Deployments'
     [void][IO.Directory]::CreateDirectory($deployments)
     try {
-        # Coordinate with an unchanged runner. Never rewrite its deployment journal
-        # or silently invalidate a Web-managed module's recorded artifact hash.
+        # Source deployment identities remain immutable. Only installed runtime
+        # hashes change, under the same lock used by the unchanged runner.
         $deploymentLock = [IO.File]::Open((Join-Path $deployments 'state.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-        $statePath = Join-Path $deployments 'state.json'
-        if (Test-Path -LiteralPath $statePath) {
-            $deploymentState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($deploymentState.batch.phase -in 'Requested', 'Approved', 'Preparing', 'Switching', 'Loading') { throw 'A runner deployment is in progress. Retry the SDK update after it finishes.' }
-            foreach ($installed in $deploymentState.installed) {
-                if ($installed.manifest.packageName -in $Set.modules) { throw "Module $($installed.manifest.packageName) is Web-managed. Deploy the prepared artifacts through Web. Set: $($Set.ManifestPath)" }
-            }
-        }
         Restore-NexoTransaction $RunnerDir -DeploymentLockHeld
+        $deploymentState = Read-NexoDeploymentState $RunnerDir
+        Assert-NexoDeploymentIdle $deploymentState
+        if ($Plan) { Assert-NexoRebuildPlanCurrent $RunnerDir $Plan $deploymentState }
+        $deploymentChanges = @()
+        foreach ($installed in $deploymentState.installed) {
+            $name = $installed.manifest.packageName
+            if ($name -notin $Set.modules) { continue }
+            $plannedModule = @($Plan.inventory | Where-Object { $_.name -eq $name })
+            $source = @($Plan.sources | Where-Object { $_.name -eq $name -and $_.embedded })
+            if (-not $Plan -or $plannedModule.Count -ne 1 -or $source.Count -ne 1 -or -not $plannedModule[0].deployment) { throw "Module $name is Web-managed and requires its verified embedded sources before an SDK rebuild." }
+            $builtSource = @($Set.sources | Where-Object { $_.name -eq $name -and $_.sourceHash -eq $source[0].sourceHash })
+            if ($builtSource.Count -ne 1) { throw "Prepared sources of $name differ from the installed deployment." }
+            $deploymentChanges += @{ packageName = $name; deploymentId = $installed.manifest.deploymentId; manifestHash = (Get-NexoDeploymentFingerprint $installed); beforeHash = $installed.zipSha256; afterHash = (Get-NexoHash (Get-NexoChildPath $Set.Root ('Modules/' + $name + '.zip'))) }
+        }
         if ($PSBoundParameters.ContainsKey('InstalledConsumers')) {
             # A panel deployment may have finished after validation. Recheck the
             # unchanged ZIPs under its lock before activating the shared runtime.
@@ -350,9 +512,10 @@ function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string
                 [IO.File]::Copy($target, (Join-Path $backupRoot $backupName))
                 $hash = Get-NexoHash (Join-Path $backupRoot $backupName)
             }
-            $files += @{ path = $relative; existed = [bool]$exists; backup = ($transaction + '/' + $backupName); sha256 = $hash }
+            $newHash = if ($relative -like 'Modules/*') { Get-NexoHash (Get-NexoChildPath $Set.Root $relative) } else { $null }
+            $files += @{ path = $relative; existed = [bool]$exists; backup = ($transaction + '/' + $backupName); sha256 = $hash; newSha256 = $newHash }
         }
-        Write-NexoJson $journalPath @{ schemaVersion = 1; phase = 'switching'; setId = $Set.id; files = $files }
+        Write-NexoJson $journalPath @{ schemaVersion = 2; phase = 'switching'; setId = $Set.id; files = $files; deployments = $deploymentChanges }
         try {
             foreach ($name in $Set.modules) { Copy-NexoAtomic (Get-NexoChildPath $Set.Root ('Modules/' + $name + '.zip')) (Get-NexoChildPath $RunnerDir ('Modules/' + $name + '.zip')) }
             $tools = Join-Path $Set.Root 'Output/Connection'
@@ -361,9 +524,10 @@ function Install-NexoSet([string]$RunnerDir, $Set, [string]$ServiceName, [string
             if ($LASTEXITCODE -ne 0) { throw 'Applying the nexo build configuration failed.' }
             Write-NexoJson (Join-Path $RunnerDir 'nexo-build.json') @{ schemaVersion = 1; setId = $Set.id; manifestPath = $Set.ManifestPath; sdkVersion = $Set.sdkVersion; connectionVersion = $Set.connectionVersion }
             Write-NexoJson (Join-Path $RunnerDir 'nexo-sdk.json') @{ version = $Set.sdkVersion; setId = $Set.id; at = (Get-Date).ToString('o') }
+            Set-NexoDeploymentHashes $RunnerDir $deploymentChanges
             # Persist completion before restart. A restart failure is reported separately:
             # these files are a complete, validated set, never half an SDK update.
-            Write-NexoJson $journalPath @{ schemaVersion = 1; phase = 'installed'; setId = $Set.id; files = $files }
+            Write-NexoJson $journalPath @{ schemaVersion = 2; phase = 'installed'; setId = $Set.id; files = $files; deployments = $deploymentChanges }
         }
         catch {
             Restore-NexoTransaction $RunnerDir -DeploymentLockHeld
@@ -408,6 +572,8 @@ $work = Get-NexoChildPath $OutputRoot ('prepare-' + [guid]::NewGuid().ToString('
 $buildLock = $null
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $plan = if ($RebuildPlan) { Get-Content -LiteralPath (Resolve-NexoPath $RebuildPlan) -Raw -Encoding UTF8 | ConvertFrom-Json } else { New-NexoRebuildPlan $RunnerDir $work $ModulesConfig }
+    if ($plan.schemaVersion -ne 1) { throw 'Invalid rebuild plan.' }
     $sfera = Join-Path $SdkDir 'InsERT.Moria.Sfera.dll'
     $sdkVersion = ([Diagnostics.FileVersionInfo]::GetVersionInfo($sfera).ProductVersion -split '\+')[0]
     if ($sdkVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Invalid SDK product version: $sdkVersion" }
@@ -446,16 +612,14 @@ try {
     $sourceVersion = [string]$projectXml.SelectSingleNode('/Project/PropertyGroup/Version').InnerText
     if ($sourceVersion -ne $connectionVersion) { throw "Connection source version $sourceVersion differs from installed $connectionVersion." }
     $sourceHash = Get-NexoTreeHash $source
-    $moduleSources = @()
+    $moduleSources = @($plan.sources)
     $names = @('Nexo.Sdk', 'Nexo.Connection')
-    foreach ($module in $config.modules) {
-        if ($module.packageName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $module.packageName -in $names -or $module.packageName.Contains('..')) { throw "Invalid or duplicate packageName: $($module.packageName)" }
-        $names += $module.packageName
-        $moduleSource = Join-Path $work $module.packageName
-        Get-NexoSourceSnapshot $module (Split-Path $ModulesConfig -Parent) $moduleSource $work
-        $moduleProject = Get-NexoChildPath $moduleSource $module.project
+    foreach ($module in $moduleSources) {
+        if ($module.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $module.name -in $names -or $module.name.Contains('..')) { throw "Invalid or duplicate module name: $($module.name)" }
+        $names += $module.name
+        $moduleProject = Get-NexoChildPath $module.source $module.project
         if (-not (Test-Path -LiteralPath $moduleProject -PathType Leaf) -or [IO.Path]::GetExtension($moduleProject) -ne '.csproj') { throw "Invalid module project: $moduleProject" }
-        $moduleSources += [pscustomobject]@{ name = $module.packageName; source = $moduleSource; project = $module.project; sourceHash = (Get-NexoTreeHash $moduleSource) }
+        if ((Get-NexoTreeHash $module.source) -ne $module.sourceHash) { throw "Source snapshot changed: $($module.name)" }
     }
     $dotnet = Get-NexoDotnet $work
     Push-Location $work
@@ -532,6 +696,17 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $moduleOutput '##Dll'))) { throw "Module $($module.name) has no ##Dll marker." }
         if ((Get-ChildItem -LiteralPath $moduleOutput -Filter 'InsERT.*.dll') -or (Test-Path -LiteralPath (Join-Path $moduleOutput 'Nexo.Connection.dll'))) { throw "Module $($module.name) contains private shared dependencies." }
         foreach ($dll in Get-ChildItem -LiteralPath $moduleOutput -Filter '*.dll') { Test-NexoReferences $dll.FullName $sdkBin $connectionDll }
+        if ($module.embedded) {
+            # Preserve the original source snapshot byte-for-byte across SDKs.
+            [IO.File]::Copy($module.archive, (Join-Path $moduleOutput 'nexo-module-source.zip'), $true)
+            [IO.File]::Copy($module.description, (Join-Path $moduleOutput 'nexo-module-source.json'), $true)
+        }
+        else {
+            $sourceZip = Join-Path $moduleOutput 'nexo-module-source.zip'
+            if (Test-Path -LiteralPath $sourceZip) { [IO.File]::Delete($sourceZip) }
+            [IO.Compression.ZipFile]::CreateFromDirectory($module.source, $sourceZip)
+            Write-NexoJson (Join-Path $moduleOutput 'nexo-module-source.json') @{ schemaVersion = 1; project = $module.project; sha256 = (Get-NexoHash $sourceZip) }
+        }
         [IO.Compression.ZipFile]::CreateFromDirectory($moduleOutput, (Join-Path $modules ($module.name + '.zip')))
     }
     # A compile probe also checks that restore selected our private DLL, even when

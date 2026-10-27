@@ -41,6 +41,10 @@ jobs:
         shell: powershell
         run: ./tests/Test-NexoSetSafety.ps1
 
+      - name: Sprawdz wykrywanie modulow i zrodel do przebudowy
+        shell: powershell
+        run: ./tests/Test-NexoInstalledConsumers.ps1
+
       - name: Wersja paczki z csproj, wersja SDK z props
         id: ver
         shell: bash
